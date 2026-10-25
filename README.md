@@ -72,6 +72,7 @@ tests/                     тесты (134 в пяти наборах)
 tools/measure_memory.py    замер токенов по уровням
 docs/                      architecture.md, measurements.md
 rollout/                   заготовки внедрения: _template, deepseek-harness
+  (раздел исследований)
 research/                  замеры и журнал найденных дефектов
 runtime/                   рабочие данные диалогов — НЕ в git (.gitignore)
 ```
@@ -214,3 +215,4 @@ python3 tools/test_cas_agent.py          # 4 сценария поведения
 | Увидеть замеры | [`docs/measurements.md`](docs/measurements.md) |
 | Проверить фактами | [`research/`](research/) |
 | Внедрить | [`rollout/`](rollout/) |
+| Поставлять результаты | [раздел исследований](раздел исследований) |
