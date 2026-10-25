@@ -365,11 +365,28 @@ class TestContentAddressedStore(unittest.TestCase):
         self.assertIsNotNone(hash_value)
         self.assertEqual(self.cas.restore(hash_value), original)
 
+    def test_reference_prefix_is_cas(self) -> None:
+        """
+        Токен ссылки — `CAS?{8 hex}?`, по утверждённому термину проекта.
+
+        Прежний `LB?` (от «library») заменён: расхождение имени с содержанием
+        путает. Тест фиксирует решение, чтобы токен не вернулся при правках.
+        """
+        from memory.cas import make_reference
+
+        self.assertEqual(make_reference("a1b2c3d4"), "CAS?a1b2c3d4?")
+        self.assertFalse(make_reference("a1b2c3d4").startswith("LB"), "вернулся старый префикс")
+
+    def test_old_prefix_not_recognised(self) -> None:
+        """Старый токен `LB?...?` больше не распознаётся как ссылка."""
+        self.assertEqual(self.cas.references_in("LB?deadbeef?"), [])
+        self.assertEqual(self.cas.expand("LB?deadbeef?"), "LB?deadbeef?")
+
     def test_reference_format(self) -> None:
-        """Формат ссылки строго LB?{8 hex}?"""
+        """Формат ссылки строго CAS?{8 hex}?"""
         text = "example/very/long/path/file.yml"
         out, hashes = self.cas.replace_in_text(text + " " + text, min_uses=2)
-        self.assertRegex(out, r"LB\?[0-9a-f]{8}\?")
+        self.assertRegex(out, r"CAS\?[0-9a-f]{8}\?")
         self.assertEqual(len(hashes), 1)
 
     def test_only_repeated_replaced(self) -> None:
@@ -398,7 +415,7 @@ class TestContentAddressedStore(unittest.TestCase):
         value = "example/path/to/some/file.yml"
         out, _ = self.cas.replace_in_text(value + " " + value, min_uses=2)
         self.assertEqual(self.cas.expand(out), f"{value} {value}")
-        self.assertEqual(self.cas.expand("LB?deadbeef?"), "LB?deadbeef?")
+        self.assertEqual(self.cas.expand("CAS?deadbeef?"), "CAS?deadbeef?")
 
     def test_collision_handling(self) -> None:
         """
@@ -476,7 +493,7 @@ class TestDirectAccess(unittest.TestCase):
         """Список ссылок в тексте — в порядке появления, без повторов."""
         a = self.cas.add("/home/user/first/long/path/file.yml")
         b = self.cas.add("alexplvl100/MultiAgentDSH")
-        text = f"LB?{a}? потом LB?{b}? и снова LB?{a}?"
+        text = f"CAS?{a}? потом CAS?{b}? и снова CAS?{a}?"
         self.assertEqual(self.cas.references_in(text), [a, b])
 
     def test_direct_access_no_llm(self) -> None:
@@ -502,7 +519,7 @@ class TestCasPrompt(unittest.TestCase):
         from memory.cas_prompt import build_cas_prompt
 
         text = build_cas_prompt()
-        self.assertIn("LB?", text)
+        self.assertIn("CAS?", text)
         self.assertIn("CAS", text)
 
     def test_prompt_requires_direct_access(self) -> None:
@@ -574,7 +591,7 @@ class TestLinking(unittest.TestCase):
         chunk = make_chunk(1, f"путь {path} и снова {path}")
         processed = link_cas(chunk, self.cas)
         self.assertEqual(len(processed["cas_refs"]), 1)
-        self.assertRegex(processed["content"], r"LB\?[0-9a-f]{8}\?")
+        self.assertRegex(processed["content"], r"CAS\?[0-9a-f]{8}\?")
         # Восстановление даёт исходный текст
         self.assertIn(path, self.cas.expand(processed["content"]))
 

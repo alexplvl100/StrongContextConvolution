@@ -87,7 +87,7 @@
         "type": "string",
         "pattern": "^[0-9a-f]{8}$"
       },
-      "description": "Хеши точных данных, заменённых в content ссылками вида LB?{хеш}?. Пустой массив, если замен не было. Оригиналы лежат в runtime/dialogs/<dialog_id>/cas.db (CAS — content-addressed store)."
+      "description": "Хеши точных данных, заменённых в content ссылками вида CAS?{хеш}?. Пустой массив, если замен не было. Оригиналы лежат в runtime/dialogs/<dialog_id>/cas.db (CAS — content-addressed store)."
     }
   }
 }

@@ -7,7 +7,7 @@
 Документ описывает, **где хранятся чанки** и **как они перемещаются** между
 уровнями. Как чанк создаётся — в [`METHODOLOGY_CORE.md`](METHODOLOGY_CORE.md).
 Как обрабатываются точные данные внутри чанка — в
-[`METHODOLOGY_LIBRARY.md`](METHODOLOGY_LIBRARY.md).
+[`METHODOLOGY_CAS.md`](METHODOLOGY_CAS.md).
 
 ---
 
@@ -201,5 +201,5 @@ runtime/dialogs/<dialog_id>/          <- НЕ в git (.gitignore)
 |---|---|
 | [`METHODOLOGY_CORE.md`](METHODOLOGY_CORE.md) | создание чанка: свёртка сырого контекста |
 | **этот документ** | уровни памяти, переходы, инварианты 1–7 |
-| [`METHODOLOGY_LIBRARY.md`](METHODOLOGY_LIBRARY.md) | точные данные внутри чанка |
+| [`METHODOLOGY_CAS.md`](METHODOLOGY_CAS.md) | точные данные внутри чанка |
 | [`core/schemas/chunk.schema.json`](core/schemas/chunk.schema.json) | машинный формат чанка |

@@ -19,7 +19,7 @@
 |---|---|---|
 | **ЯДРО** | Свёртка сырого контекста в неизменяемые чанки с маркером сжатия | [`METHODOLOGY_CORE.md`](METHODOLOGY_CORE.md) |
 | **ПАМЯТЬ** | Три уровня хранения — короткая, средняя, долгая — и переходы между ними | [`METHODOLOGY_MEMORY.md`](METHODOLOGY_MEMORY.md) |
-| **БИБЛИОТЕКА** | Глоссарий точных данных: повторяющиеся значения заменяются ссылкой на хеш | [`METHODOLOGY_LIBRARY.md`](METHODOLOGY_LIBRARY.md) |
+| **БИБЛИОТЕКА** | Глоссарий точных данных: повторяющиеся значения заменяются ссылкой на хеш | [`METHODOLOGY_CAS.md`](METHODOLOGY_CAS.md) |
 
 ## Порядок чтения
 
@@ -37,7 +37,7 @@ CORE  ->  MEMORY  ->  LIBRARY
 **При расхождении права дочерняя методология. Указатель только направляет.**
 
 Если этот файл противоречит `METHODOLOGY_CORE.md`, `METHODOLOGY_MEMORY.md` или
-`METHODOLOGY_LIBRARY.md` — верен дочерний документ. Указатель обновляется под
+`METHODOLOGY_CAS.md` — верен дочерний документ. Указатель обновляется под
 него, а не наоборот.
 
 ## Инварианты
@@ -55,11 +55,11 @@ CORE  ->  MEMORY  ->  LIBRARY
 |---|---|
 | 1. Ядро только к короткой памяти | [`METHODOLOGY_CORE.md`](METHODOLOGY_CORE.md) §5 |
 | 2. Повторная свёртка запрещена | [`METHODOLOGY_CORE.md`](METHODOLOGY_CORE.md) §2 |
-| 3. Оборот без LLM | [`METHODOLOGY_LIBRARY.md`](METHODOLOGY_LIBRARY.md) §4 |
+| 3. Оборот без LLM | [`METHODOLOGY_CAS.md`](METHODOLOGY_CAS.md) §4 |
 | 4. Чанк неизменяем | [`METHODOLOGY_CORE.md`](METHODOLOGY_CORE.md) §7 |
 | 5. Стак детерминирован | [`METHODOLOGY_MEMORY.md`](METHODOLOGY_MEMORY.md) §7 |
 | 6. `chain.json` — источник правды | [`METHODOLOGY_MEMORY.md`](METHODOLOGY_MEMORY.md) §7 |
-| 7. Архивариус только читает | [`METHODOLOGY_LIBRARY.md`](METHODOLOGY_LIBRARY.md) §7 |
+| 7. Архивариус только читает | [`METHODOLOGY_CAS.md`](METHODOLOGY_CAS.md) §7 |
 
 ## Версии дочерних документов
 
@@ -67,7 +67,7 @@ CORE  ->  MEMORY  ->  LIBRARY
 |---|---|---|---|
 | [`METHODOLOGY_CORE.md`](METHODOLOGY_CORE.md) | 1.0 | 2026-10-25 | **реализовано** (перенесено из MultiAgentDSH) |
 | [`METHODOLOGY_MEMORY.md`](METHODOLOGY_MEMORY.md) | 1.0 | 2026-10-25 | тестовая реализация |
-| [`METHODOLOGY_LIBRARY.md`](METHODOLOGY_LIBRARY.md) | 1.0 | 2026-10-25 | интерфейс, реализация отложена |
+| [`METHODOLOGY_CAS.md`](METHODOLOGY_CAS.md) | 1.0 | 2026-10-25 | интерфейс, реализация отложена |
 
 ## Статус проекта целиком
 

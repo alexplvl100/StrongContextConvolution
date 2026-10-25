@@ -7,7 +7,7 @@
 Этот документ описывает **только ядро** — свёртку сырого контекста. Где чанк
 хранится дальше и как обрабатываются точные данные, решают другие документы:
 [`METHODOLOGY_MEMORY.md`](METHODOLOGY_MEMORY.md),
-[`METHODOLOGY_LIBRARY.md`](METHODOLOGY_LIBRARY.md).
+[`METHODOLOGY_CAS.md`](METHODOLOGY_CAS.md).
 
 ---
 
@@ -112,7 +112,7 @@ E4–E13: (_SSC_) TOOL_RESULT (seq 26–35): прочитаны файлы 000�
    проставляет механизм памяти.
 3. **Не обрабатывает точные данные.** Замена повторяющихся значений на ссылки
    CAS происходит **после** ядра и без LLM
-   ([`METHODOLOGY_LIBRARY.md`](METHODOLOGY_LIBRARY.md)).
+   ([`METHODOLOGY_CAS.md`](METHODOLOGY_CAS.md)).
 4. **Не удаляет исходный контекст.** Ядро создаёт артефакт; что делать с
    источником, решает вызывающий.
 
