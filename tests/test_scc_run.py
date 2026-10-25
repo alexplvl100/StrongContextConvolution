@@ -176,6 +176,72 @@ class TestCli(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
 
 
+class TestTransitMode(unittest.TestCase):
+    """
+    ТРАНЗИТНЫЙ РЕЖИМ: принять контекст, преобразовать, отдать — НЕ храня.
+
+    Режим транзита: хранение контекста запрещено, поэтому результат уходит в
+    stdout и на диск не пишется. Файл в промежутке — это и есть хранение,
+    поэтому он не создаётся вовсе, а не удаляется после.
+
+    Проверки идут без вызова модели: режим отказа проверяется до обращения к
+    API, а значит коды возврата видны и без сети.
+    """
+
+    def _run(self, *args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, str(RUNNER), *args],
+            capture_output=True, text=True,
+        )
+
+    def test_refuses_without_any_destination(self) -> None:
+        """Без --out и без --to-stdout запуск отвергается понятной ошибкой.
+
+        Иначе было бы Path(None) с невнятным падением.
+        """
+        result = self._run("stage1", "/tmp/nonexistent_input.txt")
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("--to-stdout", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+
+    def test_refuses_both_destinations(self) -> None:
+        """--to-stdout вместе с --out отвергается: транзит не пишет файл.
+
+        Без этой проверки файл был бы записан в режиме, который обязан не
+        хранить — то есть запрет хранения нарушался бы молча.
+        """
+        result = self._run(
+            "stage1", "/tmp/nonexistent_input.txt",
+            "--out", "/tmp/should_not_exist.md", "--to-stdout",
+        )
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("НАРУШЕНИЕ", result.stderr)
+        self.assertFalse(
+            Path("/tmp/should_not_exist.md").exists(),
+            "в транзитном режиме создан файл",
+        )
+
+    def test_flag_is_documented(self) -> None:
+        """--to-stdout есть в справке этапа."""
+        result = self._run("stage1", "--help")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("--to-stdout", result.stdout)
+        self.assertIn("НЕ писать на диск", result.stdout)
+
+    def test_out_is_no_longer_mandatory(self) -> None:
+        """--out перестал быть обязательным: есть альтернатива."""
+        result = self._run("stage1", "--help")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        # При обязательном --out argparse печатал бы "required"
+        self.assertNotIn("required", result.stdout)
+
+    def test_no_ssc_flag_supported(self) -> None:
+        """--no-ssc доступен: в транзите повторной свёртки нет, маркер не нужен."""
+        result = self._run("stage3", "--help")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("--no-ssc", result.stdout)
+
+
 class TestOutputValidation(unittest.TestCase):
     """
     Живой урок: `finish_reason=stop` не гарантирует, что этап выполнен.

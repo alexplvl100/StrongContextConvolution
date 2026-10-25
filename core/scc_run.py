@@ -420,13 +420,17 @@ def run_with_retries(
         )
 
         marker = "ок" if diag is None else "СБОЙ"
+        # В транзитном режиме прогресс уходит в stderr: stdout занят артефактом.
+        # Иначе строка «попытка 1/3» попадала в начало выдаваемого документа.
+        noise = sys.stderr if getattr(args, "to_stdout", False) else sys.stdout
         print(
             f"  попытка {attempt}/{retries + 1}: {marker} — событий {events}, "
             f"{len(content)} символов, потолок {max_tokens}"
-            + (f", выход {out_tokens} ток" if out_tokens else "")
+            + (f", выход {out_tokens} ток" if out_tokens else ""),
+            file=noise,
         )
         if diag:
-            print(f"    причина: {diag}")
+            print(f"    причина: {diag}", file=noise)
 
         # Лучшей считаем попытку с наибольшим числом событий. При равенстве
         # приоритет у более полной по объёму: события могли быть те же, но
@@ -450,6 +454,24 @@ def run_with_retries(
 def cmd_stage(args: argparse.Namespace) -> int:
     """Выполнить один этап свёртки."""
     spec = STAGES[args.stage]
+
+    # Куда девать результат: ровно одно из двух. Без проверки запуск без --out
+    # упал бы на Path(None) с невнятной ошибкой, а запуск с обоими флагами
+    # записал бы файл в транзитном режиме — то есть нарушил бы запрет хранения.
+    if not args.to_stdout and not args.out:
+        print(
+            "НЕ ИЗМЕРЕНО: укажите --out <файл> или --to-stdout (транзитный режим без записи)",
+            file=sys.stderr,
+        )
+        return 2
+    if args.to_stdout and args.out:
+        print(
+            "НАРУШЕНИЕ: --to-stdout и --out вместе. В транзитном режиме файл не создаётся: "
+            "либо вывод получателю, либо запись на диск",
+            file=sys.stderr,
+        )
+        return 1
+
     expected = int(spec["inputs"])
     if len(args.inputs) != expected:
         names = ", ".join(str(n) for n in spec["input_names"])
@@ -480,13 +502,18 @@ def cmd_stage(args: argparse.Namespace) -> int:
     if prompt is None:
         return 2
 
-    print(f"этап:   {args.stage}")
-    print(f"промт:  {PROMPTS / str(spec['prompt'])}")
-    print(f"вход:   {', '.join(f'{p} ({len(d)} симв)' for p, d in zip(args.inputs, docs))}")
-    print(f"промт целиком: {len(prompt)} символов")
-    print(f"модель: {args.model}")
-    print(f"потолок: {args.max_tokens}, попыток: {int(args.retries) + 1}")
-    print("вызов...")
+    # Диагностика. В транзитном режиме уходит в stderr: stdout отдан
+    # получателю под артефакт, и служебные строки в нём недопустимы. Живой
+    # урок 2026-10-26 — без этого артефакт начинался с «этап: / промт: / вход:»,
+    # и получатель не мог отделить данные от служебных сообщений.
+    noise = sys.stderr if args.to_stdout else sys.stdout
+    print(f"этап:   {args.stage}", file=noise)
+    print(f"промт:  {PROMPTS / str(spec['prompt'])}", file=noise)
+    print(f"вход:   {', '.join(f'{p} ({len(d)} симв)' for p, d in zip(args.inputs, docs))}", file=noise)
+    print(f"промт целиком: {len(prompt)} символов", file=noise)
+    print(f"модель: {args.model}", file=noise)
+    print(f"потолок: {args.max_tokens}, попыток: {int(args.retries) + 1}", file=noise)
+    print("вызов...", file=noise)
 
     # События входа нужны для проверки покрытия: артефакт обязан покрывать
     # почти весь вход, иначе это самоограничение, а не свёртка.
@@ -497,8 +524,20 @@ def cmd_stage(args: argparse.Namespace) -> int:
     # (например, события 1..827) полезнее пустоты — его можно допрогнать или
     # сшить с ядром, а пустой файл не даёт ничего. Но код возврата обязан
     # сообщить о неполноте.
-    out_path = Path(args.out)
-    out_path.write_text(content, encoding="utf-8")
+    #
+    # ТРАНЗИТНЫЙ РЕЖИМ (--to-stdout): результат уходит в stdout и НЕ пишется на
+    # диск. Нужен там, где хранить контекст запрещено: приняли,
+    # преобразовали, отдали. Файл в промежутке — это и есть хранение, поэтому
+    # он не создаётся вовсе, а не удаляется после.
+    #
+    # Диагностика при этом уходит в stderr: иначе она смешалась бы с артефактом
+    # в stdout, и получатель не смог бы отделить данные от служебных сообщений.
+    if args.to_stdout:
+        sys.stdout.write(content)
+        sys.stdout.flush()
+    else:
+        out_path = Path(args.out)
+        out_path.write_text(content, encoding="utf-8")
 
     if diagnosis is not None:
         print(
@@ -510,7 +549,13 @@ def cmd_stage(args: argparse.Namespace) -> int:
         print("  Артефакт НЕПОЛОН — не использовать без проверки.", file=sys.stderr)
         return 1
 
-    print(f"выход:  {out_path}  ({len(content)} символов, ~{len(content) // 4} токенов)")
+    # Отчёт о выходе: в транзитном режиме файла нет, и называть его нельзя —
+    # прежде здесь стояло обращение к out_path, из-за чего прогон с
+    # --to-stdout падал с UnboundLocalError УЖЕ ПОСЛЕ выдачи артефакта.
+    # Получатель данные бы получил, а код возврата сообщил бы о сбое.
+    destination = "stdout (транзит, на диск не записано)" if args.to_stdout else str(out_path)
+    print(f"выход:  {destination}  ({len(content)} символов, ~{len(content) // 4} токенов)",
+          file=sys.stderr if args.to_stdout else sys.stdout)
     print(f"событий: {count_events(content)}")
     return 0
 
@@ -537,7 +582,15 @@ def build_parser() -> argparse.ArgumentParser:
     for stage in STAGES:
         stage_parser = sub.add_parser(stage, help=f"выполнить {stage}")
         stage_parser.add_argument("inputs", nargs="+", help="входные документы")
-        stage_parser.add_argument("--out", required=True, help="куда писать артефакт")
+        stage_parser.add_argument(
+            "--out",
+            help="куда писать артефакт (не нужен при --to-stdout)",
+        )
+        stage_parser.add_argument(
+            "--to-stdout",
+            action="store_true",
+            help="вывести артефакт в stdout и НЕ писать на диск (транзитный режим)",
+        )
         stage_parser.add_argument("--model", default=DEFAULT_MODEL, help="модель")
         stage_parser.add_argument("--base-url", default=DEFAULT_BASE_URL, help="endpoint")
         stage_parser.add_argument("--api-key", default="", help=f"ключ (или ${API_KEY_ENV})")
