@@ -1,0 +1,11 @@
+# Образец текста для проверки глоссария: повторяющиеся точные данные
+
+Путь ~/.dsh/profiles/web/cordis.patch.yml упомянут дважды:
+~/.dsh/profiles/web/cordis.patch.yml
+
+Репозиторий alexplvl100/MultiAgentDSH и снова alexplvl100/MultiAgentDSH.
+
+Хеш af3dba1cc7afffee8b7c4f485ee5afcc061f4a42fa2b90b59faff79cdfe0fa99
+и повтор af3dba1cc7afffee8b7c4f485ee5afcc061f4a42fa2b90b59faff79cdfe0fa99.
+
+Заголовок «не заменяется»: короткие числа 42 и 7 не трогаем.

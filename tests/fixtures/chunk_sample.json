@@ -1,0 +1,11 @@
+{
+  "n": 1,
+  "parent_chunk": null,
+  "source_range": {"start": 8, "end": 381},
+  "tokens_before": 200828,
+  "tokens_after": 8284,
+  "created_at": "2026-10-25T00:00:00+00:00",
+  "content": "E0: (_SSC_) SYSTEM (роль): \"You are a sandboxed test subject.\"\nE1: (_SSC_) USER (seq 8): TASK set-A part 1\nE4–E13: (_SSC_) TOOL_RESULT (seq 26–35): прочитаны файлы 000–009",
+  "glossary_refs": ["a1b2c3d4"],
+  "level": "medium"
+}
