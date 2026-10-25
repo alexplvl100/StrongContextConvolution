@@ -511,6 +511,176 @@ class TestDirectAccess(unittest.TestCase):
                     self.assertNotIn(hint, low, f"в cas.py найден импорт {name}")
 
 
+class TestCollision(unittest.TestCase):
+    """
+    КОЛЛИЗИЯ: одинаковый хеш при разном содержимом.
+
+    Вероятность ничтожна (8 hex = 32 бита, ~4 млрд значений), но она есть, и
+    поведение при ней обязано быть корректным. Живые уроки 2026-10-26:
+
+    1. прежний сдвиг адреса (`hash+1`) ломал главный инвариант CAS — адрес
+       начинал зависеть от ПОРЯДКА добавления;
+    2. расширенный адрес не распознавался регуляркой, рассчитанной ровно на
+       8 символов, — ссылка становилась невидимой для системы.
+    """
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tmp.name)
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def _store(self, name: str = "cas.db") -> ContentAddressedStore:
+        return ContentAddressedStore(self.dir / name, min_length=16)
+
+    def _occupy(self, store: ContentAddressedStore, hash_value: str, value: str) -> None:
+        """Занять хеш посторонним значением — так подделывается коллизия."""
+        store._connection.execute(
+            "INSERT INTO cas (hash, value, first_seen, uses) VALUES (?, ?, ?, 1)",
+            (hash_value, value, "2026-10-26T00:00:00+00:00"),
+        )
+        store._connection.commit()
+
+    def test_collision_address_is_deterministic(self) -> None:
+        """
+        Адрес при коллизии — функция содержимого, а не порядка добавления.
+
+        Прежний сдвиг давал: база A -> fe6e2882, база B -> fe6e2881 для одного
+        значения. Ссылка в записанном чанке перестала бы разрешаться при
+        пересборке базы, а чанк неизменяем — исправить её нечем.
+        """
+        value = "/home/user/first/long/path/file.yml"
+        other = "/home/user/second/other/file.yml"
+        base_hash = compute_hash(value)
+
+        first = self._store("a.db")
+        self._occupy(first, base_hash, other)
+        address_in_first = first.add(value)
+        first.close()
+
+        second = self._store("b.db")
+        address_in_second = second.add(value)
+        second.close()
+
+        self.assertNotEqual(address_in_first, base_hash, "коллизия не разрешилась")
+        self.assertEqual(
+            address_in_first, compute_hash(value, len(address_in_first)),
+            "расширенный адрес не является префиксом того же sha256",
+        )
+        self.assertTrue(
+            compute_hash(value, len(address_in_first)).startswith(base_hash),
+            "расширенный адрес не продолжает базовый хеш",
+        )
+
+    def test_collision_address_is_stable_across_orders(self) -> None:
+        """Тот же конфликт в другом порядке даёт тот же расширенный адрес."""
+        value = "/home/user/order/test/long/path/file.yml"
+        other = "/home/user/occupier/long/path/file.yml"
+        base_hash = compute_hash(value)
+
+        first = self._store("x.db")
+        self._occupy(first, base_hash, other)
+        addr_conflict = first.add(value)
+        first.close()
+
+        # В базе без конфликта значение получает базовый адрес, а конфликтующий
+        # — расширенный. Проверяем, что расширенный адрес предсказуем: он
+        # префикс sha256, а не «следующий свободный».
+        second = self._store("y.db")
+        addr_free = second.add(value)
+        second.close()
+        self.assertEqual(addr_free, base_hash)
+        self.assertEqual(addr_conflict, compute_hash(value, len(addr_conflict)))
+
+    def test_extended_hash_reference_is_recognised(self) -> None:
+        """
+        Ссылка с расширенным хешем распознаётся и разрешается.
+
+        Живой урок: регулярка была рассчитана ровно на 8 символов, поэтому
+        `CAS?fe6e288101?` она не находила вовсе — ссылка в чанке становилась
+        невидимой, значение не разрешалось, потери не было видно.
+        """
+        value = "/home/user/extended/hash/long/file.yml"
+        other = "/home/user/occupier/other/file.yml"
+        store = self._store("ext.db")
+        self._occupy(store, compute_hash(value), other)
+        address = store.add(value)
+        store.close()
+
+        self.assertGreater(len(address), 8, "адрес не расширился")
+
+        reopened = ContentAddressedStore(self.dir / "ext.db", min_length=16)
+        reference = f"CAS?{address}?"
+        text = f"путь {reference} тут"
+        self.assertEqual(reopened.references_in(text), [address], "расширенная ссылка не найдена")
+        self.assertEqual(reopened.resolve_many([address]), {address: value})
+        self.assertEqual(reopened.expand(text), f"путь {value} тут")
+        reopened.close()
+
+    def test_both_values_resolve_after_collision(self) -> None:
+        """После коллизии разрешаются ОБА значения — и занявшее, и новое."""
+        value = "/home/user/both/first/long/file.yml"
+        other = "/home/user/both/second/long/file.yml"
+        store = self._store("both.db")
+        self._occupy(store, compute_hash(value), other)
+        address = store.add(value)
+
+        self.assertEqual(store.restore(address), value)
+        self.assertEqual(store.restore(compute_hash(value)), other)
+        self.assertEqual(store.size(), 2)
+        store.close()
+
+    def test_repeated_add_after_collision_is_idempotent(self) -> None:
+        """
+        Повторное добавление после коллизии не создаёт дубликат и не падает.
+
+        Живой урок: проверка «значение уже есть» смотрела только базовую длину,
+        поэтому повторный add значения с расширенным адресом не находил его и
+        падал с `UNIQUE constraint failed: cas.hash`.
+        """
+        value = "/home/user/idempotent/long/path/file.yml"
+        other = "/home/user/occupier/long/path/file.yml"
+        store = self._store("idem.db")
+        self._occupy(store, compute_hash(value), other)
+
+        first = store.add(value)
+        second = store.add(value)
+        third = store.add(value)
+
+        self.assertEqual([first, second, third], [first, first, first],
+                         "повторное добавление сменило адрес")
+        self.assertEqual(store.size(), 2, "созданы лишние записи")
+        entry = store.get(first)
+        self.assertIsNotNone(entry)
+        self.assertGreaterEqual(entry.uses, 3, "счётчик использований не растёт")
+        store.close()
+
+    def test_no_silent_substitution_on_missing_reference(self) -> None:
+        """
+        Отсутствующая ссылка НЕ подменяется: значение просто отсутствует.
+
+        Это важнее удобства: подставленное правдоподобное значение выглядело бы
+        как настоящие данные, и потеря прошла бы незамеченной.
+        """
+        store = self._store("missing.db")
+        self.assertEqual(store.resolve_many(["deadbeef"]), {})
+        self.assertEqual(store.restore("deadbeef"), None)
+        text = "ссылка CAS?deadbeef? не разрешается"
+        self.assertEqual(store.expand(text), text, "отсутствующая ссылка была подменена")
+        self.assertEqual(store.references_in(text), ["deadbeef"])
+        store.close()
+
+    def test_mixed_present_and_missing(self) -> None:
+        """В списке ссылок разрешаются только присутствующие, остальные видны."""
+        value = "/home/user/mixed/long/path/file.yml"
+        store = self._store("mixed.db")
+        address = store.add(value)
+        resolved = store.resolve_many([address, "deadbeef"])
+        self.assertEqual(resolved, {address: value})
+        store.close()
+
+
 class TestCasPrompt(unittest.TestCase):
     """Промт доступа к CAS: ставится после промта Архивариуса, перед чанками."""
 

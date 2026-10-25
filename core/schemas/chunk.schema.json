@@ -85,9 +85,9 @@
       "type": "array",
       "items": {
         "type": "string",
-        "pattern": "^[0-9a-f]{8}$"
+        "pattern": "^[0-9a-f]{8,64}$"
       },
-      "description": "Хеши точных данных, заменённых в content ссылками вида CAS?{хеш}?. Пустой массив, если замен не было. Оригиналы лежат в runtime/dialogs/<dialog_id>/cas.db (CAS — content-addressed store)."
+      "description": "Хеши точных данных, заменённых в content ссылками вида CAS?{хеш}?. Длина 8 hex-символов базовая; при коллизии адрес расширяется (до 64), поэтому допустимы 8-64 символа. Пустой массив, если замен не было. Оригиналы лежат в runtime/dialogs/<dialog_id>/cas.db."
     }
   }
 }

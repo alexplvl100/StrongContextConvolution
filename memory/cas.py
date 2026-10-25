@@ -65,11 +65,24 @@ from pathlib import Path
 # $ — конец строки-якорь: без него `re.search` нашёл бы `CAS?` внутри слова.
 REFERENCE_PREFIX = "CAS?"
 REFERENCE_SUFFIX = "?"
-REFERENCE_RE = re.compile(r"CAS\?([0-9a-f]{8})\?")
+# Длина хеша в ссылке — от 8 до 64 символов. Восемь базовая; больше при
+# коллизии, когда адрес расширяется (см. COLLISION_HASH_LENGTHS). Регулярка
+# обязана принимать обе, иначе расширенный адрес станет НЕВИДИМ для системы:
+# ссылка в чанке не распознается, значение не разрешится. Живой урок
+# 2026-10-26 — на этом сначала спотыкались.
+REFERENCE_RE = re.compile(r"CAS\?([0-9a-f]{8,64})\?")
 
 # ── Хеш ──────────────────────────────────────────────────────────────────────
 HASH_HEX_LENGTH = 8
 HASH_SPACE = 16**HASH_HEX_LENGTH
+
+# ── Длины хеша при коллизии ──────────────────────────────────────────────────
+# Базовая длина 8 (32 бита, ~4 млрд значений). При совпадении адреса берётся
+# БОЛЬШЕ символов того же sha256 — адрес остаётся функцией содержимого.
+# Сдвиг адреса (hash+1) запрещён: он привязал бы адрес к порядку добавления,
+# и ссылки в уже записанных чанках перестали бы разрешаться.
+# Шаг 2 hex-символа: +8 бит на попытку, полный sha256 достигается к 64.
+COLLISION_HASH_LENGTHS: tuple[int, ...] = tuple(range(HASH_HEX_LENGTH + 2, 65, 2))
 
 # ── Что считаем точными данными ──────────────────────────────────────────────
 # Список ОТКРЫТЫЙ (METHODOLOGY_CAS.md §2). Регулярки ищут кандидатов; длину
@@ -120,15 +133,23 @@ def normalize(value: str) -> str:
     return re.sub(r"\s+", " ", result)
 
 
-def compute_hash(value: str) -> str:
+def compute_hash(value: str, length: int = HASH_HEX_LENGTH) -> str:
     """
-    Хеш нормализованной строки: sha256, первые 8 hex-символов.
+    Хеш нормализованной строки: первые `length` hex-символов sha256.
 
-    Стабильность обязательна (одна строка -> один хеш). Это чистая функция:
-    результат зависит только от входа.
+    Стабильность обязательна (одна строка -> один хеш). Это ЧИСТАЯ функция:
+    результат зависит только от входа и длины, но НЕ от состояния базы и не от
+    порядка добавления. На этом свойстве держится весь CAS.
+
+    `length` больше базовой используется только при коллизии: берётся больше
+    символов того же хеша, а не другое значение.
     """
+    if length < HASH_HEX_LENGTH or length > 64:
+        raise ValueError(
+            f"длина хеша обязана быть в диапазоне {HASH_HEX_LENGTH}..64, получено {length}"
+        )
     digest = hashlib.sha256(normalize(value).encode("utf-8")).hexdigest()
-    return digest[:HASH_HEX_LENGTH]
+    return digest[:length]
 
 
 def make_reference(hash_value: str) -> str:
@@ -176,28 +197,35 @@ class ContentAddressedStore:
         длиннее оригинала). Значения короче порога в базу не попадают — иначе
         база росла бы мусором.
 
-        КОЛЛИЗИИ. Если хеш занят ДРУГОЙ строкой, берётся следующий свободный
-        (hash+1). Конфликт логируется: он означает рост базы выше расчётного
-        (2^32 значений).
+        КОЛЛИЗИИ. Если базовая длина хеша занята ДРУГОЙ строкой, хеш РАСШИРЯЕТСЯ
+        (берётся больше символов того же sha256). Сдвиг адреса запрещён — он
+        привязал бы адрес к порядку добавления.
+
+        ЖИВОЙ УРОК (2026-10-26). Прежняя проверка «значение уже есть» смотрела
+        ТОЛЬКО базовую длину. Если значение ранее получило расширенный адрес
+        из-за коллизии, повторный `add` не находил его и падал на вставке с
+        `UNIQUE constraint failed: cas.hash`. Поэтому теперь ищется по всем
+        длинам: сначала базовая, затем расширенные.
         """
         canonical = normalize(value)
         if len(canonical) < self.min_length:
             return None
 
+        existing_hash = self._find_existing(canonical)
+        if existing_hash is not None:
+            # Значение уже есть: увеличиваем счётчик, адрес не меняем.
+            self._connection.execute(
+                "UPDATE cas SET uses = uses + 1 WHERE hash = ?", (existing_hash,)
+            )
+            self._connection.commit()
+            return existing_hash
+
         hash_value = compute_hash(canonical)
-        existing = self._connection.execute(
+        row = self._connection.execute(
             "SELECT value FROM cas WHERE hash = ?", (hash_value,)
         ).fetchone()
-
-        if existing is not None:
-            if existing["value"] == canonical:
-                # Повтор: увеличиваем счётчик использования, хеш не меняется.
-                self._connection.execute(
-                    "UPDATE cas SET uses = uses + 1 WHERE hash = ?", (hash_value,)
-                )
-                self._connection.commit()
-                return hash_value
-            # Коллизия: ищем свободный хеш последовательным сдвигом.
+        if row is not None:
+            # Базовая длина занята другим значением — расширяем адрес.
             hash_value = self._resolve_collision(canonical, hash_value)
 
         self._connection.execute(
@@ -207,33 +235,71 @@ class ContentAddressedStore:
         self._connection.commit()
         return hash_value
 
+    def _find_existing(self, canonical: str) -> str | None:
+        """
+        Найти запись для значения по ВСЕМ возможным длинам хеша.
+
+        Возвращает адрес, под которым значение уже лежит, или None. Нужен,
+        чтобы повторное добавление не создавало дубликат и не падало на
+        ограничении уникальности: значение, получившее расширенный адрес при
+        коллизии, обязано находиться и при базовой длине.
+        """
+        for length in (HASH_HEX_LENGTH, *COLLISION_HASH_LENGTHS):
+            candidate = compute_hash(canonical, length)
+            row = self._connection.execute(
+                "SELECT value FROM cas WHERE hash = ?", (candidate,)
+            ).fetchone()
+            if row is not None and row["value"] == canonical:
+                return candidate
+        return None
+
     def _resolve_collision(self, canonical: str, start_hash: str) -> str:
         """
-        Найти свободный хеш при коллизии.
+        Разрешить коллизию РАСШИРЕНИЕМ хеша, а не сдвигом.
 
-        Сдвиг на единицу по модулю пространства хешей. Логируем в stderr: это
-        редкое событие, и о нём стоит знать — оно говорит, что база подошла к
-        пределу 8-символьного хеша.
+        ЖИВОЙ УРОК (найдено при тестировании коллизий 2026-10-26).
+        Прежняя реализация брала следующий свободный адрес (`hash+1`). Это
+        ломало ГЛАВНЫЙ инвариант CAS: адрес перестаёт быть функцией от
+        содержимого и начинает зависеть от ПОРЯДКА добавления. Проверено:
+
+            база A: сначала v2, потом v1  ->  адрес v1 = fe6e2882
+            база B: сначала v1, потом v2  ->  адрес v1 = fe6e2881
+
+        Следствие тяжёлое: ссылка `CAS?fe6e2882?` в уже записанном чанке при
+        пересборке базы (или в другом диалоге) перестала бы разрешаться —
+        там v1 получил бы fe6e2881. Чанк неизменяем (инвариант 4), значит
+        исправить ссылку в нём нечем: значение потеряно навсегда.
+
+        ПРАВИЛЬНО: взять БОЛЬШЕ символов того же sha256. Адрес остаётся чистой
+        функцией содержимого, а вероятность повторной коллизии падает с каждым
+        шагом (8 hex = 32 бита, 10 = 40, 12 = 48, ...).
+
+        Почему это безопасно для записанных ссылок: базовая длина 8 не
+        меняется, расширяются только конфликтующие записи. Ссылки вида
+        `CAS?xxxxxxxx?` разрешаются как прежде.
         """
         import sys
 
-        candidate = (int(start_hash, 16) + 1) % HASH_SPACE
-        for _ in range(HASH_SPACE):
-            candidate_hash = f"{candidate:0{HASH_HEX_LENGTH}x}"
+        print(
+            f"CAS: КОЛЛИЗИЯ для {canonical[:60]!r}: {start_hash} занят другим значением. "
+            "Расширяю хеш — сдвиг адреса запрещён, он сломал бы привязку к содержимому",
+            file=sys.stderr,
+        )
+        for length in COLLISION_HASH_LENGTHS:
+            candidate_hash = compute_hash(canonical, length)
             row = self._connection.execute(
                 "SELECT value FROM cas WHERE hash = ?", (candidate_hash,)
             ).fetchone()
             if row is None:
-                print(
-                    f"CAS: КОЛЛИЗИЯ для {canonical[:60]!r}: "
-                    f"{start_hash} занят, взят {candidate_hash}",
-                    file=sys.stderr,
-                )
                 return candidate_hash
             if row["value"] == canonical:
+                # Значение уже есть под этим адресом — расширение не нужно.
                 return candidate_hash
-            candidate = (candidate + 1) % HASH_SPACE
-        raise RuntimeError("CAS: пространство хешей исчерпано — нужна большая длина хеша")
+        # Практически недостижимо: полный sha256 в hex — 64 символа.
+        raise RuntimeError(
+            "CAS: коллизия не разрешилась даже на полной длине sha256 — "
+            "это означает повреждение базы, а не совпадение хешей"
+        )
 
     # ── Чтение ───────────────────────────────────────────────────────────────
 
