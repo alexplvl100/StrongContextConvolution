@@ -31,12 +31,19 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
+from memory.schema import SchemaError, validate_chunk
+
 CHAIN_FILENAME = "chain.json"
 CHUNKS_DIRNAME = "chunks"
 
 
 class ChunkError(RuntimeError):
     """Нарушение инварианта работы с чанками."""
+
+
+# SchemaError поднимается как есть: она называет конкретное поле и уже
+# наследуется от ValueError. Оборачивать её в ChunkError значило бы потерять
+# точность сообщения — а именно оно помогает исправить чанк.
 
 
 class ChunkStack:
@@ -90,6 +97,13 @@ class ChunkStack:
         Без неё повторная свёртка молча затёрла бы старый чанк, и потеря
         контекста осталась бы незамеченной.
         """
+        # СХЕМА ПРОВЕРЯЕТСЯ ДО ЗАПИСИ, и это принципиально. Чанк неизменяем
+        # (инвариант 4): записанный однажды, он не перезаписывается. Значит
+        # ошибка в структуре осталась бы в архиве навсегда — исправить её будет
+        # нечем. Поэтому контракт из core/schemas/chunk.schema.json исполняется
+        # здесь, а не описывается только в документации.
+        validate_chunk(chunk)
+
         n = chunk.get("n")
         if not isinstance(n, int) or n < 1:
             raise ChunkError(f"чанк обязан иметь целое поле n >= 1, получено {n!r}")

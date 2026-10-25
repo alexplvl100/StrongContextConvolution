@@ -432,6 +432,110 @@ class TestGlossary(unittest.TestCase):
         self.assertEqual(self.glossary.expand(out), text)
 
 
+class TestLinking(unittest.TestCase):
+    """
+    Связка ядра и глоссария: «чанк создан ядром -> обработан глоссарием».
+
+    Закрывает открытый вопрос методологии: раньше глоссарий вызывался только
+    вручную, и автоматического шага не существовало.
+    """
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tmp.name)
+        self.glossary = Glossary(self.dir / "glossary.db", min_length=16)
+
+    def tearDown(self) -> None:
+        self.glossary.close()
+        self.tmp.cleanup()
+
+    def test_repeated_values_replaced(self) -> None:
+        """Повторяющиеся точные данные заменяются ссылками, refs заполняются."""
+        from memory.linking import link_glossary
+
+        path = "~/.dsh/profiles/web/cordis.patch.yml"
+        chunk = make_chunk(1, f"путь {path} и снова {path}")
+        processed = link_glossary(chunk, self.glossary)
+        self.assertEqual(len(processed["glossary_refs"]), 1)
+        self.assertRegex(processed["content"], r"LB\?[0-9a-f]{8}\?")
+        # Восстановление даёт исходный текст
+        self.assertIn(path, self.glossary.expand(processed["content"]))
+
+    def test_original_chunk_not_mutated(self) -> None:
+        """Исходный чанк не меняется: возвращается новый объект."""
+        from memory.linking import link_glossary
+
+        path = "/home/user/.some/long/path/file.yml"
+        chunk = make_chunk(1, f"{path} {path}")
+        before_content = chunk["content"]
+        processed = link_glossary(chunk, self.glossary)
+        self.assertEqual(chunk["content"], before_content, "исходный чанк изменён")
+        self.assertIsNot(chunk, processed)
+
+    def test_metadata_untouched(self) -> None:
+        """Метаданные не трогаются: n, level, created_at, source_range."""
+        from memory.linking import link_glossary
+
+        path = "/home/user/another/long/path/file.yml"
+        chunk = make_chunk(7, f"{path} {path}")
+        processed = link_glossary(chunk, self.glossary)
+        for field in ("n", "level", "created_at", "source_range", "parent_chunk"):
+            self.assertEqual(processed[field], chunk[field], f"поле {field} изменилось")
+
+    def test_tokens_after_recomputed(self) -> None:
+        """tokens_after пересчитывается: старое значение стало неверным."""
+        from memory.linking import link_glossary
+        from memory import tokens
+
+        path = "/home/user/recount/long/path/file.yml"
+        chunk = make_chunk(1, f"{path} {path}")
+        chunk["tokens_after"] = 999999  # заведомо неверное
+        processed = link_glossary(chunk, self.glossary)
+        self.assertEqual(processed["tokens_after"], tokens.estimate(processed["content"]))
+
+    def test_single_occurrence_not_replaced(self) -> None:
+        """Одиночное значение не заменяется — refs пуст."""
+        from memory.linking import link_glossary
+
+        chunk = make_chunk(1, "путь example/only/once/here.yml упомянут однажды")
+        processed = link_glossary(chunk, self.glossary)
+        self.assertEqual(processed["glossary_refs"], [])
+        self.assertEqual(processed["content"], chunk["content"])
+
+    def test_no_llm_import_in_linking(self) -> None:
+        """Связка не вызывает модель: инвариант 3."""
+        tree = ast.parse((MEMORY / "linking.py").read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    self.assertNotIn("openai", alias.name.lower())
+                    self.assertNotIn("anthropic", alias.name.lower())
+            if isinstance(node, ast.ImportFrom) and node.module:
+                self.assertNotIn("openai", node.module.lower())
+                self.assertNotIn("anthropic", node.module.lower())
+
+    def test_report_mentions_delta(self) -> None:
+        """Отчёт показывает изменение объёма — иначе выигрыш незаметен."""
+        from memory.linking import link_glossary, linking_report
+
+        path = "/home/user/report/long/path/file.yml"
+        chunk = make_chunk(1, f"{path} {path}")
+        processed = link_glossary(chunk, self.glossary)
+        report = linking_report(chunk, processed)
+        self.assertIn("ссылок", report)
+        self.assertIn("символов", report)
+
+    def test_processed_chunk_matches_schema(self) -> None:
+        """Обработанный чанк проходит валидацию по схеме."""
+        from memory.linking import link_glossary
+        from memory.schema import validate_chunk
+
+        path = "/home/user/schema/check/long/path/file.yml"
+        chunk = make_chunk(1, f"{path} {path}")
+        processed = link_glossary(chunk, self.glossary)
+        validate_chunk(processed)  # не должно бросить
+
+
 class TestSchemaFile(unittest.TestCase):
     """Схема чанка существует и валидна как JSON."""
 
@@ -448,9 +552,85 @@ class TestSchemaFile(unittest.TestCase):
             self.assertIn(field, required, f"в схеме нет обязательного поля {field}")
 
     def test_level_enum_excludes_short(self) -> None:
-        """Уровень чанка — medium или long: у短 короткой памяти чанка нет."""
+        """Уровень чанка — medium или long: у короткой памяти чанка нет."""
         schema = json.loads((ROOT / "core" / "schemas" / "chunk.schema.json").read_text(encoding="utf-8"))
         self.assertEqual(schema["properties"]["level"]["enum"], ["medium", "long"])
+
+    def test_schema_is_used_by_code(self) -> None:
+        """
+        Схема ИСПОЛЬЗУЕТСЯ, а не только описана.
+
+        Критерий приёмки требует «схема валидна и используется в коде». Проверка
+        исполняемая: валидатор подключён к записи чанка, поэтому невалидный чанк
+        обязан быть отвергнут ещё до попадания на диск.
+        """
+        from memory.schema import validate_chunk
+
+        valid = make_chunk(1)
+        validate_chunk(valid)  # не должно бросить
+
+    def test_missing_field_rejected(self) -> None:
+        """Чанк без обязательного поля отвергается с указанием поля."""
+        from memory.schema import SchemaError, validate_chunk
+
+        broken = make_chunk(1)
+        del broken["created_at"]
+        with self.assertRaises(SchemaError) as caught:
+            validate_chunk(broken)
+        self.assertIn("created_at", str(caught.exception))
+
+    def test_wrong_level_rejected(self) -> None:
+        """level=short отвергается: у короткой памяти чанка не бывает."""
+        from memory.schema import SchemaError, validate_chunk
+
+        broken = make_chunk(1, level="short")
+        with self.assertRaises(SchemaError):
+            validate_chunk(broken)
+
+    def test_unknown_field_rejected(self) -> None:
+        """Лишнее поле отвергается: схема запрещает additionalProperties."""
+        from memory.schema import SchemaError, validate_chunk
+
+        broken = make_chunk(1)
+        broken["лишнее"] = "поле"
+        with self.assertRaises(SchemaError):
+            validate_chunk(broken)
+
+    def test_bad_hash_in_glossary_refs_rejected(self) -> None:
+        """Ссылка на глоссарий обязана быть 8 hex-символов."""
+        from memory.schema import SchemaError, validate_chunk
+
+        broken = make_chunk(1)
+        broken["glossary_refs"] = ["не-хеш"]
+        with self.assertRaises(SchemaError):
+            validate_chunk(broken)
+
+    def test_bad_datetime_rejected(self) -> None:
+        """created_at обязан быть ISO 8601."""
+        from memory.schema import SchemaError, validate_chunk
+
+        broken = make_chunk(1)
+        broken["created_at"] = "25 октября"
+        with self.assertRaises(SchemaError):
+            validate_chunk(broken)
+
+    def test_stack_validates_before_write(self) -> None:
+        """
+        Валидация идёт ДО записи — иначе ошибка осталась бы в архиве навсегда.
+
+        Чанк неизменяем (инвариант 4), поэтому исправлять записанный чанк нечем.
+        """
+        from memory.schema import SchemaError
+
+        with tempfile.TemporaryDirectory() as tmp:
+            stack = ChunkStack(Path(tmp) / "d", "d")
+            broken = make_chunk(1)
+            del broken["content"]
+            with self.assertRaises(SchemaError):
+                stack.add(broken)
+            # Ни файла, ни записи в chain.json остаться не должно
+            self.assertFalse(stack.chunk_path(1).exists(), "битый чанк записан на диск")
+            self.assertEqual(stack.ordered(), [], "битый чанк попал в chain.json")
 
 
 def main() -> int:

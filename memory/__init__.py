@@ -26,6 +26,8 @@ __all__ = [
     "config",
     "tokens",
     "glossary",
+    "linking",
+    "schema",
     "stack",
     "short",
     "medium",

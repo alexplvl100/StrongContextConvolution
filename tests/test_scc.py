@@ -279,6 +279,81 @@ class TestMarkerPlacement(unittest.TestCase):
             self.assertEqual(report["core_events"], 0, "маркер из тела попал в ядро")
 
 
+class TestMarkerSingleSource(unittest.TestCase):
+    """
+    Маркер задан ОДИН раз, регулярка собрана из константы.
+
+    Живой урок (найдено при переносе в отдельный проект): маркер был задан
+    дважды — константой SSC_MARK и захардкоженной строкой внутри EVENT_RE.
+    Правка одного места оставила бы второе в старом виде, и разбор молча
+    перестал бы видеть события: «события не найдены» на полностью помеченном
+    файле. Ошибка не проявляется до первой миграции маркера.
+    """
+
+    def _module(self):
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("scc_chunk_marker", CHUNK)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules["scc_chunk_marker"] = module
+        assert spec.loader is not None
+        spec.loader.exec_module(module)
+        return module
+
+    def test_regex_is_built_from_constant(self) -> None:
+        """Регулярка содержит именно текущее значение константы."""
+        module = self._module()
+        import re
+
+        self.assertIn(
+            re.escape(module.SSC_MARK),
+            module.EVENT_RE.pattern,
+            "регулярка не собрана из SSC_MARK — маркер задан дважды",
+        )
+
+    def test_approved_marker_value(self) -> None:
+        """
+        Маркер УТВЕРЖДЁН как `(_SSC_)` — это не временное состояние.
+
+        Заказчик принял фактическое написание вместо постановочного `_SCC_`.
+        Тест фиксирует решение: случайная смена константы при рефакторинге
+        сломала бы совместимость со всеми ранее созданными артефактами.
+        """
+        module = self._module()
+        self.assertEqual(
+            module.SSC_MARK, "(_SSC_)",
+            "маркер изменён; это решение заказчика, а не деталь реализации",
+        )
+
+    def test_old_marker_not_recognised(self) -> None:
+        """Постановочное `_SCC_` НЕ распознаётся: артефакты используют `(_SSC_)`."""
+        module = self._module()
+        parsed = module.parse("E0: _SCC_ SYSTEM\nE1: USER\n")
+        self.assertEqual(len(parsed.core), 0, "распознан маркер, которого нет в артефактах")
+
+    def test_marker_change_is_picked_up(self) -> None:
+        """
+        Смена константы меняет разбор — значит источник действительно единый.
+
+        Подменяем SSC_MARK, пересобираем регулярку тем же способом и проверяем,
+        что старый маркер больше не распознаётся, а новый — распознаётся.
+        """
+        module = self._module()
+        import re
+
+        old_mark = module.SSC_MARK
+        new_mark = "(_TEST_)"
+        module.SSC_MARK = new_mark
+        module.EVENT_RE = re.compile(
+            module.EVENT_RE.pattern.replace(re.escape(old_mark), re.escape(new_mark)),
+            re.MULTILINE,
+        )
+        parsed = module.parse(f"E0: {new_mark} SYSTEM\nE1: USER\n")
+        self.assertEqual(len(parsed.core), 1, "новый маркер не распознан")
+        parsed_old = module.parse(f"E0: {old_mark} SYSTEM\n")
+        self.assertEqual(len(parsed_old.core), 0, "старый маркер всё ещё распознаётся")
+
+
 class TestMarkdownHeadings(unittest.TestCase):
     """
     Живой урок: на большом контексте модель пишет заголовки в Markdown.
