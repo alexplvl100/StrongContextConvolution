@@ -32,7 +32,7 @@ SUITES: tuple[tuple[str, str], ...] = (
     ("test_scc_events.py", "конвертер журнала в поток событий"),
     ("test_scc_run.py", "сборка промтов и CLI этапов"),
     ("test_scc_usability.py", "оценка пригодности ядра"),
-    ("test_memory.py", "трёхуровневая память и глоссарий"),
+    ("test_memory.py", "трёхуровневая память и CAS"),
 )
 
 

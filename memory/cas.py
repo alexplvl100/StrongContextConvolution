@@ -1,9 +1,27 @@
 """
-SCC — глоссарий точных данных
-==============================
+SCC — CAS: хранилище точных данных с адресацией по содержимому
+================================================================
 
-Заменяет повторяющиеся точные данные ссылками вида `LB?{хеш}?`, храня оригиналы
-в SQLite. Описан в METHODOLOGY_LIBRARY.md.
+CAS (content-addressed store) — хранилище, где **адрес записи вычисляется из её
+содержимого**: `sha256(value)[:8]`. Повторяющиеся точные данные в чанке
+заменяются ссылками вида `LB?{хеш}?`, оригиналы лежат в SQLite. Механизм описан
+в METHODOLOGY_LIBRARY.md (имя файла историческое, см. ниже).
+
+ЧТО ЭТО ФАКТИЧЕСКИ
+-------------------
+Не «глоссарий» и не «библиотека». Глоссарий даёт **определения терминов**, а
+здесь толкования нет: значение возвращается дословно, тем же самым. Библиотека
+предполагает **каталог и классификацию** объектов, имеющих самостоятельную
+ценность, а здесь плоская таблица «адрес → строка», и строка ценна лишь тем,
+что на неё ссылается чанк.
+
+Точное имя — **content-addressed store**: адрес есть функция данных,
+восстановление побайтовое, смысл значения для хранилища безразличен.
+
+    from memory.cas import ContentAddressedStore
+    cas = ContentAddressedStore(Path("runtime/dialogs/d1/cas.db"))
+    text, hashes = cas.replace_in_text("путь /home/user/x.yml и снова /home/user/x.yml")
+    cas.restore(hashes[0])        # -> "/home/user/x.yml"
 
 БЕЗ LLM
 --------
@@ -12,22 +30,30 @@ SQLite. Языковая модель здесь не участвует и не
 METHODOLOGY_MEMORY.md). Импортов LLM-клиентов в файле нет — это проверяется
 тестом.
 
+ДОСТУП НАПРЯМУЮ, МИНУЯ АРХИВАРИУС
+-----------------------------------
+Основной агент получает оригинал по ссылке **прямым вызовом функции**
+(`restore` / `expand`), а не через Архивариуса. Причина: Архивариус — агент с
+LLM, и его пересказ внёс бы искажение в точное значение. Точные данные обязаны
+возвращаться побайтово, поэтому доступ к CAS идёт в обход любой модели.
+См. METHODOLOGY_LIBRARY.md §7.
+
 ПОЧЕМУ ХЕШ, А НЕ ИНДЕКС
 ------------------------
 Индекс (`LB?1?`, `LB?2?`) короче, но привязан к порядку добавления: скопировали
 чанк в другой диалог — ссылки указывают не туда. Хеш от содержимого переносим:
 одна и та же строка в любом диалоге даёт одну и ту же ссылку.
 
+О ФОРМАТЕ ССЫЛКИ. Префикс `LB?` оставлен от исторического имени файла
+методологии. Термин проекта — **CAS**, но сам токен ссылки не переименовывался:
+он присутствует во всех ранее созданных артефактах, и молчаливая замена
+разошлась бы с накопленной историей.
+
 СТАБИЛЬНОСТЬ
 -------------
 Одна и та же строка обязана давать один и тот же хеш — иначе восстановление
 невозможно. Поэтому нормализация (снятие кавычек, пробелов) выполняется ДО
 хеширования и зафиксирована тестом.
-
-    from memory.glossary import Glossary
-    g = Glossary(Path("runtime/dialogs/d1/glossary.db"))
-    text, hashes = g.replace_in_text("путь /home/user/x.yml и снова /home/user/x.yml")
-    g.restore(hashes[0])        # -> "/home/user/x.yml"
 """
 
 from __future__ import annotations
@@ -40,8 +66,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 # ── Формат ссылки ────────────────────────────────────────────────────────────
-# `LB?{8 hex}?` — 13 символов. LB от «library»: имя файла методологии, по
-#становлению. Термин в тексте документа — «глоссарий».
+# `LB?{8 hex}?` — 13 символов. Префикс LB — исторический, от имени файла
+# методологии (METHODOLOGY_LIBRARY.md). Термин проекта — CAS; токен ссылки
+# намеренно НЕ переименован: он есть во всех ранее созданных артефактах.
 REFERENCE_PREFIX = "LB?"
 REFERENCE_SUFFIX = "?"
 REFERENCE_RE = re.compile(r"LB\?([0-9a-f]{8})\?")
@@ -52,7 +79,7 @@ HASH_SPACE = 16**HASH_HEX_LENGTH
 
 # ── Что считаем точными данными ──────────────────────────────────────────────
 # Список ОТКРЫТЫЙ (METHODOLOGY_LIBRARY.md §2). Регулярки ищут кандидатов; длину
-# отсекает glossary_min_length из конфига.
+# отсекает cas_min_length из конфига.
 PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     # Пути: абсолютные и относительные, с расширением или без
     ("path", re.compile(r"(?:/[\w.\-@]+){2,}/?")),
@@ -78,8 +105,8 @@ _STRIP_CHARS = " \t\n\r\"'`«»()[]{}<>,;:"
 
 
 @dataclass(frozen=True)
-class GlossaryEntry:
-    """Запись глоссария: хеш, оригинал, когда добавлен, сколько раз встретился."""
+class CasEntry:
+    """Запись CAS: хеш, оригинал, когда добавлен, сколько раз встретился."""
 
     hash: str
     value: str
@@ -115,11 +142,11 @@ def make_reference(hash_value: str) -> str:
     return f"{REFERENCE_PREFIX}{hash_value}{REFERENCE_SUFFIX}"
 
 
-class Glossary:
+class ContentAddressedStore:
     """
     База точных данных одного диалога.
 
-    Файл БД лежит в runtime/dialogs/<dialog_id>/glossary.db. Каталог создаётся
+    Файл БД лежит в runtime/dialogs/<dialog_id>/cas.db. Каталог создаётся
     автоматически: вызывающему не нужно помнить о структуре.
     """
 
@@ -135,7 +162,7 @@ class Glossary:
         """Создать таблицу, если её нет. Схема — из METHODOLOGY_LIBRARY.md §6."""
         self._connection.execute(
             """
-            CREATE TABLE IF NOT EXISTS glossary (
+            CREATE TABLE IF NOT EXISTS cas (
                 hash       TEXT PRIMARY KEY,
                 value      TEXT NOT NULL,
                 first_seen TEXT NOT NULL,
@@ -165,14 +192,14 @@ class Glossary:
 
         hash_value = compute_hash(canonical)
         existing = self._connection.execute(
-            "SELECT value FROM glossary WHERE hash = ?", (hash_value,)
+            "SELECT value FROM cas WHERE hash = ?", (hash_value,)
         ).fetchone()
 
         if existing is not None:
             if existing["value"] == canonical:
                 # Повтор: увеличиваем счётчик использования, хеш не меняется.
                 self._connection.execute(
-                    "UPDATE glossary SET uses = uses + 1 WHERE hash = ?", (hash_value,)
+                    "UPDATE cas SET uses = uses + 1 WHERE hash = ?", (hash_value,)
                 )
                 self._connection.commit()
                 return hash_value
@@ -180,7 +207,7 @@ class Glossary:
             hash_value = self._resolve_collision(canonical, hash_value)
 
         self._connection.execute(
-            "INSERT INTO glossary (hash, value, first_seen, uses) VALUES (?, ?, ?, 1)",
+            "INSERT INTO cas (hash, value, first_seen, uses) VALUES (?, ?, ?, 1)",
             (hash_value, canonical, datetime.now(timezone.utc).isoformat()),
         )
         self._connection.commit()
@@ -200,11 +227,11 @@ class Glossary:
         for _ in range(HASH_SPACE):
             candidate_hash = f"{candidate:0{HASH_HEX_LENGTH}x}"
             row = self._connection.execute(
-                "SELECT value FROM glossary WHERE hash = ?", (candidate_hash,)
+                "SELECT value FROM cas WHERE hash = ?", (candidate_hash,)
             ).fetchone()
             if row is None:
                 print(
-                    f"глоссарий: КОЛЛИЗИЯ для {canonical[:60]!r}: "
+                    f"CAS: КОЛЛИЗИЯ для {canonical[:60]!r}: "
                     f"{start_hash} занят, взят {candidate_hash}",
                     file=sys.stderr,
                 )
@@ -212,30 +239,30 @@ class Glossary:
             if row["value"] == canonical:
                 return candidate_hash
             candidate = (candidate + 1) % HASH_SPACE
-        raise RuntimeError("глоссарий: пространство хешей исчерпано — нужна большая длина хеша")
+        raise RuntimeError("CAS: пространство хешей исчерпано — нужна большая длина хеша")
 
     # ── Чтение ───────────────────────────────────────────────────────────────
 
     def restore(self, hash_value: str) -> str | None:
         """Вернуть оригинал по хешу. None, если хеша нет."""
         row = self._connection.execute(
-            "SELECT value FROM glossary WHERE hash = ?", (hash_value,)
+            "SELECT value FROM cas WHERE hash = ?", (hash_value,)
         ).fetchone()
         return row["value"] if row is not None else None
 
-    def get(self, hash_value: str) -> GlossaryEntry | None:
+    def get(self, hash_value: str) -> CasEntry | None:
         """Вернуть запись целиком (хеш, оригинал, дата, счётчик)."""
         row = self._connection.execute(
-            "SELECT hash, value, first_seen, uses FROM glossary WHERE hash = ?",
+            "SELECT hash, value, first_seen, uses FROM cas WHERE hash = ?",
             (hash_value,),
         ).fetchone()
         if row is None:
             return None
-        return GlossaryEntry(row["hash"], row["value"], row["first_seen"], row["uses"])
+        return CasEntry(row["hash"], row["value"], row["first_seen"], row["uses"])
 
     def size(self) -> int:
-        """Число записей в глоссарии."""
-        return int(self._connection.execute("SELECT COUNT(*) AS c FROM glossary").fetchone()["c"])
+        """Число записей в CAS."""
+        return int(self._connection.execute("SELECT COUNT(*) AS c FROM cas").fetchone()["c"])
 
     def count_references(self, text: str) -> int:
         """Сколько ссылок `LB?...?` в тексте."""
@@ -254,6 +281,41 @@ class Glossary:
 
         return REFERENCE_RE.sub(substitute, text)
 
+    def resolve_many(self, hashes: list[str]) -> dict[str, str]:
+        """
+        ПРЯМОЙ ДОСТУП: разрешить список ссылок одним запросом.
+
+        Это тот самый механизм, которым основной агент получает точные данные
+        **напрямую из CAS, минуя Архивариуса**. Причина обязательного обхода:
+        Архивариус — агент с LLM, и его пересказ внёс бы искажение в значение.
+        Точные данные обязаны возвращаться побайтово, поэтому путь к ним не
+        проходит ни через одну модель.
+
+        Возвращает словарь «хеш → оригинал». Чего нет в базе — в словаре
+        отсутствует: подставить пустое или выдуманное значило бы потерять
+        значение незаметно, а так вызывающий видит пробел.
+
+        Один SQL-запрос вместо N: список ссылок в чанке обычно длиннее одной, и
+        построчный обход был бы лишними обращениями к диску.
+        """
+        if not hashes:
+            return {}
+        unique = list(dict.fromkeys(hashes))
+        placeholders = ",".join("?" * len(unique))
+        rows = self._connection.execute(
+            f"SELECT hash, value FROM cas WHERE hash IN ({placeholders})", unique
+        ).fetchall()
+        return {row["hash"]: row["value"] for row in rows}
+
+    def references_in(self, text: str) -> list[str]:
+        """
+        Список ссылок в тексте, в порядке появления, без повторов.
+
+        Нужен агенту, чтобы понять, какие значения доступны: он видит в чанке
+        `LB?{хеш}?`, собирает их этим методом и запрашивает у CAS напрямую.
+        """
+        return list(dict.fromkeys(REFERENCE_RE.findall(text)))
+
     # ── Замена в тексте ──────────────────────────────────────────────────────
 
     def replace_in_text(self, text: str, min_uses: int = 2) -> tuple[str, list[str]]:
@@ -261,7 +323,7 @@ class Glossary:
         Заменить повторяющиеся точные данные ссылками.
 
         Возвращает (новый текст, список хешей). Список идёт в поле
-        `glossary_refs` чанка по схеме core/schemas/chunk.schema.json.
+        `cas_refs` чанка по схеме core/schemas/chunk.schema.json.
 
         ПОВТОРЯЮЩИЕСЯ, А НЕ ВСЕ ПОДРЯД. Требование методологии: заменяются
         ПОВТОРЯЮЩИЕСЯ точные данные. Значение, встреченное один раз, выгоднее
@@ -297,7 +359,7 @@ class Glossary:
             # виде: regex нашёл одно, а в тексте встречается и другое.
             #
             # Хеш добавляется в список РОВНО ОДИН РАЗ. Живой урок: добавление
-            # внутри цикла по вариантам давало дубликат в glossary_refs —
+            # внутри цикла по вариантам давало дубликат в cas_refs —
             # `['64aa0bc9', '8ee75bee']` для одной строки, и схема чанка
             # заполнялась ссылками, которых в тексте нет.
             replaced = False
@@ -313,7 +375,7 @@ class Glossary:
         """Закрыть соединение с базой."""
         self._connection.close()
 
-    def __enter__(self) -> "Glossary":
+    def __enter__(self) -> "ContentAddressedStore":
         return self
 
     def __exit__(self, *exc_info: object) -> None:

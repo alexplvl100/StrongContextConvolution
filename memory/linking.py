@@ -1,28 +1,28 @@
 """
-SCC — связка ядра и глоссария
+SCC — связка ядра и CAS
 ==============================
 
-Закрывает открытый вопрос методологии: **глоссарий не был связан с созданием
-чанка**, вызывался только вручную. Здесь шаг «ядро создало чанк → глоссарий
+Закрывает открытый вопрос методологии: **CAS не был связан с созданием
+чанка**, вызывался только вручную. Здесь шаг «ядро создало чанк → CAS
 обработал» выполняется одной функцией.
 
 ПОРЯДОК ИЗ METHODOLOGY_LIBRARY.md §4
 --------------------------------------
     1. ядро SCC сжимает короткую память   -> чанк с точными данными
-    2. глоссарий проходит по чанку        -> заменяет повторы на LB?{хеш}?
+    2. CAS проходит по чанку        -> заменяет повторы на LB?{хеш}?
     3. оригиналы пишутся в базу
-    4. glossary_refs чанка заполняется списком хешей
+    4. cas_refs чанка заполняется списком хешей
 
 ПОЧЕМУ ПОСЛЕ ЯДРА, А НЕ ВО ВРЕМЯ
 ----------------------------------
-Ядро — проход языковой модели, глоссарий — детерминированная обработка текста.
-Смешивать нельзя: ядро обязано закончить и зафиксировать чанк, иначе глоссарий
+Ядро — проход языковой модели, CAS — детерминированная обработка текста.
+Смешивать нельзя: ядро обязано закончить и зафиксировать чанк, иначе CAS
 работал бы по нестабильному входу. Кроме того, замена ссылками **после** свёртки
 не искажает оценку коэффициента сжатия ядра.
 
 ПОЧЕМУ ФУНКЦИЯ, А НЕ ПРАВКА MEDIUM
 ------------------------------------
-Замена в чанке меняет `content` и `glossary_refs`. Если сделать это побочным
+Замена в чанке меняет `content` и `cas_refs`. Если сделать это побочным
 эффектом `MediumMemory.append_chunk`, станет непонятно, в каком состоянии чанк
 пришёл: до обработки или после. Явная функция оставляет решение вызывающему и
 не прячет изменение содержимого.
@@ -32,37 +32,37 @@ SCC — связка ядра и глоссария
 Не вызывает модель (инвариант 3) и не пишет чанк в стек. Она принимает чанк,
 возвращает НОВЫЙ чанк — исходный не мутируется. Запись — дело памяти.
 
-    from memory.glossary import Glossary
-    from memory.linking import link_glossary
+    from memory.cas import ContentAddressedStore
+    from memory.linking import link_cas
 
-    glossary = Glossary(dialog_dir / "glossary.db")
-    processed = link_glossary(chunk, glossary)
+    cas = ContentAddressedStore(dialog_dir / "cas.db")
+    processed = link_cas(chunk, cas)
 """
 
 from __future__ import annotations
 
-from memory.glossary import Glossary
+from memory.cas import ContentAddressedStore
 
 # Сколько раз значение должно встретиться, чтобы его заменять.
 # Два — минимум по определению «повторяющееся»: одно вхождение заменять нечего.
 DEFAULT_MIN_USES = 2
 
 
-def link_glossary(
+def link_cas(
     chunk: dict,
-    glossary: Glossary,
+    cas: ContentAddressedStore,
     min_uses: int = DEFAULT_MIN_USES,
 ) -> dict:
     """
-    Обработать чанк глоссарием: заменить повторяющиеся точные данные ссылками.
+    Обработать чанк CAS: заменить повторяющиеся точные данные ссылками.
 
     Возвращает **новый** чанк; исходный не изменяется. Если замен не было,
-    возвращается копия с пустым `glossary_refs` — не тот же объект, чтобы
+    возвращается копия с пустым `cas_refs` — не тот же объект, чтобы
     вызывающий не полагался на совпадение ссылок.
 
     Поля, которые функция НЕ трогает: `n`, `source_range`, `tokens_before`,
     `level`, `created_at`, `parent_chunk`. Обновляются только `content` и
-    `glossary_refs` — и добавляется `tokens_after`, потому что после замены
+    `cas_refs` — и добавляется `tokens_after`, потому что после замены
     объём чанка изменился, и старое значение стало неверным.
 
     ВНИМАНИЕ про `tokens_after`: пересчитывается по эвристике (4 символа =
@@ -76,14 +76,14 @@ def link_glossary(
     if not isinstance(content, str):
         raise TypeError(f"content чанка обязан быть строкой, получено {type(content).__name__}")
 
-    replaced_content, hashes = glossary.replace_in_text(content, min_uses=min_uses)
+    replaced_content, hashes = cas.replace_in_text(content, min_uses=min_uses)
 
     processed = dict(chunk)
     processed["content"] = replaced_content
     # Список хешей уникален и упорядочен по убыванию длины заменённого значения
-    # (порядок задаёт glossary.replace_in_text). Дубликатов быть не может, но
+    # (порядок задаёт cas.replace_in_text). Дубликатов быть не может, но
     # проверка дешева, а расхождение со схемой — дорого.
-    processed["glossary_refs"] = list(dict.fromkeys(hashes))
+    processed["cas_refs"] = list(dict.fromkeys(hashes))
     processed["tokens_after"] = tokens.estimate(replaced_content)
     return processed
 
@@ -98,7 +98,7 @@ def linking_report(chunk: dict, processed: dict) -> str:
     """
     before = len(chunk.get("content", ""))
     after = len(processed.get("content", ""))
-    refs = len(processed.get("glossary_refs", []))
+    refs = len(processed.get("cas_refs", []))
     delta = after - before
     sign = "+" if delta > 0 else ""
     return (

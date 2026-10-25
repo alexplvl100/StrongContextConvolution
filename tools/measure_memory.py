@@ -30,7 +30,7 @@ SCC — замер расхода токенов по уровням памят�
 инструкции архива. Сжатие имитируется коэффициентом (замеренный в research/),
 а не вызовом ядра: замер должен быть детерминированным и не зависеть от LLM.
 
-Не моделируется: содержание сжатия, поведение глоссария (он уменьшает объём,
+Не моделируется: содержание сжатия, поведение CAS (он уменьшает объём,
 и без него оценка консервативна).
 
 Использование:
@@ -56,6 +56,7 @@ from memory.config import MemoryConfig  # noqa: E402
 from memory.long import LongMemory  # noqa: E402
 from memory.medium import MediumMemory  # noqa: E402
 from memory.short import ShortMemory  # noqa: E402
+from memory.cas_prompt import cas_token_cost  # noqa: E402
 from memory.stack import ChunkStack  # noqa: E402
 
 # ── Параметры сценария ───────────────────────────────────────────────────────
@@ -87,7 +88,7 @@ def make_chunk(n: int, content_chars: int) -> dict:
         "tokens_after": tokens.estimate(content),
         "created_at": "2026-10-25T00:00:00+00:00",
         "content": content,
-        "glossary_refs": [],
+        "cas_refs": [],
         "level": "medium",
     }
 
@@ -131,8 +132,14 @@ def run_scenario(steps: int, step_chars: int, config: MemoryConfig) -> list[dict
 
             # Объём в контексте: инструкция + стак + короткая
             instruction = long_memory.instruction()
+            # Промт CAS занимает место в контексте, если ссылки есть. В сценарии
+            # CAS не моделируется, поэтому считаем по факту: ссылок нет —
+            # промта нет. Это видно в таблице отдельной колонкой, а не
+            # растворяется в «прочем».
+            cas_prompt_tokens = cas_token_cost(0)
             in_context = (
                 tokens.estimate(instruction)
+                + cas_prompt_tokens
                 + medium.token_count()
                 + short.token_count()
             )
@@ -144,6 +151,7 @@ def run_scenario(steps: int, step_chars: int, config: MemoryConfig) -> list[dict
                 "medium_chunks": len(medium),
                 "long_chunks": len(long_memory),
                 "instruction_tokens": tokens.estimate(instruction),
+                "cas_prompt_tokens": cas_prompt_tokens,
                 "in_context": in_context,
                 "no_memory": no_memory_tokens,
             })

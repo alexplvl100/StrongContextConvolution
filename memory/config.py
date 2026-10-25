@@ -67,7 +67,7 @@ class MemoryConfig:
     Настройки механизма памяти. Неизменяемый: правка создаёт новую копию.
 
     Неизменяемость здесь не украшение: конфиг читается несколькими компонентами
-    (ядро, стак, глоссарий), и его случайная правка на лету дала бы разное
+    (ядро, стак, CAS), и его случайная правка на лету дала бы разное
     поведение в разных местах одного прогона.
     """
 
@@ -76,8 +76,8 @@ class MemoryConfig:
     threshold_archivist: int = DEFAULT_THRESHOLD_ARCHIVIST
 
     # ── Глоссарий ────────────────────────────────────────────────────────────
-    glossary_min_length: int = DEFAULT_GLOSSARY_MIN_LENGTH
-    glossary_enabled: bool = True
+    cas_min_length: int = DEFAULT_GLOSSARY_MIN_LENGTH
+    cas_enabled: bool = True
 
     # ── Прочее ───────────────────────────────────────────────────────────────
     max_chunk_bytes: int = DEFAULT_MAX_CHUNK_BYTES
@@ -101,8 +101,8 @@ class MemoryConfig:
                 f"({self.threshold_archivist} <= {self.threshold_compress}): "
                 "иначе первый же чанк сразу уезжает в архив и средняя память не используется"
             )
-        if self.glossary_min_length < 0:
-            raise ValueError("glossary_min_length не может быть отрицательным")
+        if self.cas_min_length < 0:
+            raise ValueError("cas_min_length не может быть отрицательным")
 
     def with_thresholds(self, compress: int | None = None, archivist: int | None = None) -> "MemoryConfig":
         """Вернуть копию с другими порогами (исходный конфиг не меняется)."""
@@ -120,8 +120,8 @@ class MemoryConfig:
         Переменные:
             SCC_THRESHOLD_COMPRESS   — порог сжатия короткой памяти
             SCC_THRESHOLD_ARCHIVIST  — порог выноса стака в архив
-            SCC_GLOSSARY_MIN_LENGTH  — минимальная длина заменяемого значения
-            SCC_GLOSSARY_ENABLED     — "0"/"false" отключает глоссарий
+            SCC_CAS_MIN_LENGTH  — минимальная длина заменяемого значения
+            SCC_CAS_ENABLED     — "0"/"false" отключает CAS
         """
         source = os.environ if env is None else env
 
@@ -134,10 +134,10 @@ class MemoryConfig:
             except ValueError as error:
                 raise ValueError(f"{name}: ожидалось целое число, получено {raw!r}") from error
 
-        enabled_raw = source.get("SCC_GLOSSARY_ENABLED", "1").strip().lower()
+        enabled_raw = source.get("SCC_CAS_ENABLED", "1").strip().lower()
         return cls(
             threshold_compress=number("SCC_THRESHOLD_COMPRESS", DEFAULT_THRESHOLD_COMPRESS),
             threshold_archivist=number("SCC_THRESHOLD_ARCHIVIST", DEFAULT_THRESHOLD_ARCHIVIST),
-            glossary_min_length=number("SCC_GLOSSARY_MIN_LENGTH", DEFAULT_GLOSSARY_MIN_LENGTH),
-            glossary_enabled=enabled_raw not in ("0", "false", "no", "off"),
+            cas_min_length=number("SCC_CAS_MIN_LENGTH", DEFAULT_GLOSSARY_MIN_LENGTH),
+            cas_enabled=enabled_raw not in ("0", "false", "no", "off"),
         )

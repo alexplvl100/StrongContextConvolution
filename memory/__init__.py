@@ -12,12 +12,12 @@ SCC — трёхуровневый механизм памяти
 Быстрый старт:
 
     from memory.config import MemoryConfig
-    from memory.glossary import Glossary
+    from memory.cas import ContentAddressedStore
     from memory.stack import ChunkStack
 
     config = MemoryConfig()
     stack = ChunkStack(dialog_dir)
-    glossary = Glossary(dialog_dir / "glossary.db")
+    cas = ContentAddressedStore(dialog_dir / "cas.db")
 """
 
 from __future__ import annotations
@@ -25,7 +25,8 @@ from __future__ import annotations
 __all__ = [
     "config",
     "tokens",
-    "glossary",
+    "cas",
+    "cas_prompt",
     "linking",
     "schema",
     "stack",

@@ -12,7 +12,7 @@
     "tokens_after",
     "created_at",
     "content",
-    "glossary_refs",
+    "cas_refs",
     "level"
   ],
   "properties": {
@@ -22,18 +22,36 @@
       "description": "Порядковый номер чанка. Нумерация сквозная внутри диалога: chunk_1, chunk_2, ... Номер НЕ переиспользуется даже после выноса в архив."
     },
     "parent_chunk": {
-      "type": ["integer", "null"],
+      "type": [
+        "integer",
+        "null"
+      ],
       "minimum": 1,
       "description": "Номер предыдущего чанка в цепочке либо null для первого. Поле описывает порядок появления, а не порядок чтения: источник правды о порядке — chain.json (инвариант 6)."
     },
     "source_range": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["start", "end"],
+      "required": [
+        "start",
+        "end"
+      ],
       "description": "Границы исходного контекста, который заменил этот чанк. start/end — номерные метки событий (E<N>), а не байтовые смещения: ядро работает с событиями, а не с текстом.",
       "properties": {
-        "start": {"type": ["integer", "string"], "description": "Начало диапазона включительно."},
-        "end": {"type": ["integer", "string"], "description": "Конец диапазона включительно."}
+        "start": {
+          "type": [
+            "integer",
+            "string"
+          ],
+          "description": "Начало диапазона включительно."
+        },
+        "end": {
+          "type": [
+            "integer",
+            "string"
+          ],
+          "description": "Конец диапазона включительно."
+        }
       }
     },
     "tokens_before": {
@@ -44,7 +62,7 @@
     "tokens_after": {
       "type": "integer",
       "minimum": 0,
-      "description": "Токенов в чанке после сжатия (с учётом замен глоссария, если они применены)."
+      "description": "Токенов в чанке после сжатия (с учётом замен CAS, если они применены)."
     },
     "created_at": {
       "type": "string",
@@ -55,15 +73,21 @@
       "type": "string",
       "description": "Сжатое описание событий с постфиксом-маркером сжатия у каждого события. Маркер в текущей реализации — (_SSC_); см. RESEARCH/R-SCC-01 о его происхождении."
     },
-    "glossary_refs": {
-      "type": "array",
-      "items": {"type": "string", "pattern": "^[0-9a-f]{8}$"},
-      "description": "Хеши точных данных, заменённых в content ссылками вида LB?{хеш}?. Пустой массив, если замен не было. Оригиналы лежат в runtime/dialogs/<dialog_id>/glossary.db."
-    },
     "level": {
       "type": "string",
-      "enum": ["medium", "long"],
+      "enum": [
+        "medium",
+        "long"
+      ],
       "description": "Текущий уровень памяти. short здесь НЕ допускается: короткая память — это несжатый контекст в харнессе, у неё нет чанка (METHODOLOGY_MEMORY.md)."
+    },
+    "cas_refs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{8}$"
+      },
+      "description": "Хеши точных данных, заменённых в content ссылками вида LB?{хеш}?. Пустой массив, если замен не было. Оригиналы лежат в runtime/dialogs/<dialog_id>/cas.db (CAS — content-addressed store)."
     }
   }
 }

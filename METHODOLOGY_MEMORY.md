@@ -167,7 +167,7 @@ runtime/dialogs/<dialog_id>/          <- НЕ в git (.gitignore)
 │   ├── chunk_0002.json
 │   └── ...
 ├── chain.json                        <- порядок и уровни (инвариант 6)
-└── glossary.db                       <- глоссарий точных данных (LIBRARY)
+└── cas.db                       <- CAS точных данных (LIBRARY)
 ```
 
 `runtime/` исключён из репозитория: это оперативные данные, они растут и у

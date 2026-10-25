@@ -17,7 +17,7 @@ SCC — тесты трёхуровневой памяти
 6. chain.json — источник правды о порядке;
 7. Архивариус только читает: у архива нет метода возврата в среднюю память.
 
-Плюс отдельно: глоссарий (детерминизм хеша, round-trip замены, коллизии) и
+Плюс отдельно: CAS (детерминизм хеша, round-trip замены, коллизии) и
 пороги (разные числа, проверка конфига).
 
 Запуск:
@@ -41,7 +41,7 @@ sys.path.insert(0, str(ROOT))
 
 from memory import tokens  # noqa: E402
 from memory.config import MemoryConfig  # noqa: E402
-from memory.glossary import Glossary, compute_hash, normalize  # noqa: E402
+from memory.cas import ContentAddressedStore, compute_hash, normalize  # noqa: E402
 from memory.long import LongMemory  # noqa: E402
 from memory.medium import MediumMemory  # noqa: E402
 from memory.short import ShortMemory  # noqa: E402
@@ -58,7 +58,7 @@ def make_chunk(n: int, content: str = "содержимое", level: str = "medi
         "tokens_after": tokens.estimate(content),
         "created_at": "2026-10-25T00:00:00+00:00",
         "content": content,
-        "glossary_refs": [],
+        "cas_refs": [],
         "level": level,
     }
 
@@ -332,16 +332,16 @@ class TestNoLlmInMemory(unittest.TestCase):
         self.assertEqual(offenders, [], f"память импортирует ядро: {offenders}")
 
 
-class TestGlossary(unittest.TestCase):
+class TestContentAddressedStore(unittest.TestCase):
     """Глоссарий точных данных."""
 
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.dir = Path(self.tmp.name)
-        self.glossary = Glossary(self.dir / "glossary.db", min_length=10)
+        self.cas = ContentAddressedStore(self.dir / "cas.db", min_length=10)
 
     def tearDown(self) -> None:
-        self.glossary.close()
+        self.cas.close()
         self.tmp.cleanup()
 
     def test_hash_is_stable(self) -> None:
@@ -361,44 +361,44 @@ class TestGlossary(unittest.TestCase):
     def test_round_trip(self) -> None:
         """Замена ссылкой и обратное восстановление дают исходную строку."""
         original = "example/very/long/path/file.yml"
-        hash_value = self.glossary.add(original)
+        hash_value = self.cas.add(original)
         self.assertIsNotNone(hash_value)
-        self.assertEqual(self.glossary.restore(hash_value), original)
+        self.assertEqual(self.cas.restore(hash_value), original)
 
     def test_reference_format(self) -> None:
         """Формат ссылки строго LB?{8 hex}?"""
         text = "example/very/long/path/file.yml"
-        out, hashes = self.glossary.replace_in_text(text + " " + text, min_uses=2)
+        out, hashes = self.cas.replace_in_text(text + " " + text, min_uses=2)
         self.assertRegex(out, r"LB\?[0-9a-f]{8}\?")
         self.assertEqual(len(hashes), 1)
 
     def test_only_repeated_replaced(self) -> None:
         """Одиночное значение не заменяется: ссылка не сократит, а читаемость ухудшит."""
         text = "example/only/once/here.yml"
-        out, hashes = self.glossary.replace_in_text(text, min_uses=2)
+        out, hashes = self.cas.replace_in_text(text, min_uses=2)
         self.assertEqual(out, text)
         self.assertEqual(hashes, [])
 
     def test_short_values_skipped(self) -> None:
         """Короткие значения не заменяются: ссылка длиннее оригинала."""
-        self.assertIsNone(self.glossary.add("abc"))
+        self.assertIsNone(self.cas.add("abc"))
 
     def test_uses_counter_grows(self) -> None:
         """Повторное добавление увеличивает счётчик, хеш не меняется."""
         value = "example/path/to/some/file.yml"
-        first = self.glossary.add(value)
-        second = self.glossary.add(value)
+        first = self.cas.add(value)
+        second = self.cas.add(value)
         self.assertEqual(first, second)
-        entry = self.glossary.get(first)
+        entry = self.cas.get(first)
         self.assertIsNotNone(entry)
         self.assertGreaterEqual(entry.uses, 2)
 
     def test_expand_restores_all(self) -> None:
         """Раскрытие возвращает все ссылки, неизвестные оставляет как есть."""
         value = "example/path/to/some/file.yml"
-        out, _ = self.glossary.replace_in_text(value + " " + value, min_uses=2)
-        self.assertEqual(self.glossary.expand(out), f"{value} {value}")
-        self.assertEqual(self.glossary.expand("LB?deadbeef?"), "LB?deadbeef?")
+        out, _ = self.cas.replace_in_text(value + " " + value, min_uses=2)
+        self.assertEqual(self.cas.expand(out), f"{value} {value}")
+        self.assertEqual(self.cas.expand("LB?deadbeef?"), "LB?deadbeef?")
 
     def test_collision_handling(self) -> None:
         """
@@ -410,96 +410,213 @@ class TestGlossary(unittest.TestCase):
         value = "/home/user/collision/test/file.yml"
         hash_value = compute_hash(value)
         # Занимаем хеш посторонним значением напрямую в базе
-        self.glossary._connection.execute(
-            "INSERT INTO glossary (hash, value, first_seen, uses) VALUES (?, ?, ?, 1)",
+        self.cas._connection.execute(
+            "INSERT INTO cas (hash, value, first_seen, uses) VALUES (?, ?, ?, 1)",
             (hash_value, "/home/user/other/value.yml", "2026-10-25T00:00:00+00:00"),
         )
-        self.glossary._connection.commit()
-        new_hash = self.glossary.add(value)
+        self.cas._connection.commit()
+        new_hash = self.cas.add(value)
         self.assertIsNotNone(new_hash)
         self.assertNotEqual(new_hash, hash_value, "коллизия не разрешена")
-        self.assertEqual(self.glossary.restore(new_hash), value)
-        self.assertEqual(self.glossary.restore(hash_value), "/home/user/other/value.yml")
+        self.assertEqual(self.cas.restore(new_hash), value)
+        self.assertEqual(self.cas.restore(hash_value), "/home/user/other/value.yml")
 
     def test_longest_first_replacement(self) -> None:
         """Длинные значения заменяются первыми: иначе короткое съест часть длинного."""
         long_value = "/home/user/very/long/path/inside/file.yml"
         short_value = "/home/user/very/long/path"
         text = f"{long_value} {long_value} {short_value} {short_value}"
-        out, hashes = self.glossary.replace_in_text(text, min_uses=2)
+        out, hashes = self.cas.replace_in_text(text, min_uses=2)
         # Оба должны быть заменены, и восстановление обязано вернуть исходное
         self.assertEqual(len(hashes), 2)
-        self.assertEqual(self.glossary.expand(out), text)
+        self.assertEqual(self.cas.expand(out), text)
+
+
+class TestDirectAccess(unittest.TestCase):
+    """
+    ПРЯМОЙ доступ к CAS, минуя Архивариуса.
+
+    Требование: точные данные возвращаются побайтово прямо из базы. Архивариус —
+    агент с LLM, и его пересказ исказил бы значение. Поэтому путь к данным не
+    проходит ни через одну модель.
+    """
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tmp.name)
+        self.cas = ContentAddressedStore(self.dir / "cas.db", min_length=16)
+
+    def tearDown(self) -> None:
+        self.cas.close()
+        self.tmp.cleanup()
+
+    def test_resolve_many_one_call(self) -> None:
+        """Список ссылок разрешается одним вызовом, значения дословны."""
+        values = [
+            "~/.dsh/profiles/web/cordis.patch.yml",
+            "alexplvl100/MultiAgentDSH",
+            "af3dba1cc7afffee8b7c4f485ee5afcc061f4a42fa2b90b59faff79cdfe0fa99",
+        ]
+        hashes = [self.cas.add(v) for v in values]
+        resolved = self.cas.resolve_many([h for h in hashes if h])
+        self.assertEqual(len(resolved), 3)
+        for value, hash_value in zip(values, hashes):
+            self.assertEqual(resolved[hash_value], value, "значение искажено")
+
+    def test_unknown_hash_absent_not_faked(self) -> None:
+        """Неизвестный хеш не подставляется: его просто нет в результате."""
+        resolved = self.cas.resolve_many(["deadbeef"])
+        self.assertEqual(resolved, {}, "выдумано значение для неизвестного хеша")
+
+    def test_resolve_many_empty(self) -> None:
+        """Пустой список даёт пустой словарь, а не ошибку."""
+        self.assertEqual(self.cas.resolve_many([]), {})
+
+    def test_references_in_order(self) -> None:
+        """Список ссылок в тексте — в порядке появления, без повторов."""
+        a = self.cas.add("/home/user/first/long/path/file.yml")
+        b = self.cas.add("alexplvl100/MultiAgentDSH")
+        text = f"LB?{a}? потом LB?{b}? и снова LB?{a}?"
+        self.assertEqual(self.cas.references_in(text), [a, b])
+
+    def test_direct_access_no_llm(self) -> None:
+        """Модуль CAS не содержит импортов LLM: доступ не через модель."""
+        tree = ast.parse((MEMORY / "cas.py").read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            names: list[str] = []
+            if isinstance(node, ast.Import):
+                names = [a.name for a in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                names = [node.module]
+            for name in names:
+                low = name.lower()
+                for hint in ("openai", "anthropic", "requests", "httpx", "aiohttp"):
+                    self.assertNotIn(hint, low, f"в cas.py найден импорт {name}")
+
+
+class TestCasPrompt(unittest.TestCase):
+    """Промт доступа к CAS: ставится после промта Архивариуса, перед чанками."""
+
+    def test_prompt_mentions_reference_format(self) -> None:
+        """Промт объясняет формат ссылки — иначе она выглядит как мусор."""
+        from memory.cas_prompt import build_cas_prompt
+
+        text = build_cas_prompt()
+        self.assertIn("LB?", text)
+        self.assertIn("CAS", text)
+
+    def test_prompt_requires_direct_access(self) -> None:
+        """Промт требует обращаться НАПРЯМУЮ и объясняет, почему."""
+        from memory.cas_prompt import build_cas_prompt
+
+        text = build_cas_prompt()
+        self.assertIn("НАПРЯМУЮ", text)
+        self.assertIn("Архивариус", text)
+        self.assertIn("побайтово", text)
+
+    def test_prompt_names_tools(self) -> None:
+        """Промт называет инструменты доступа."""
+        from memory.cas_prompt import build_cas_prompt
+
+        text = build_cas_prompt()
+        for tool in ("resolve_many", "restore", "references_in"):
+            self.assertIn(tool, text, f"инструмент {tool} не назван")
+
+    def test_prompt_forbids_guessing(self) -> None:
+        """Промт запрещает выдумывать значение по ссылке."""
+        from memory.cas_prompt import build_cas_prompt
+
+        text = build_cas_prompt()
+        self.assertIn("не подставляй", text)
+
+    def test_empty_when_no_references(self) -> None:
+        """При нуле ссылок промт пуст: не занимать контекст впустую."""
+        from memory.cas_prompt import build_cas_prompt
+
+        self.assertEqual(build_cas_prompt(0), "")
+
+    def test_count_included_when_known(self) -> None:
+        """Известное число ссылок попадает в промт."""
+        from memory.cas_prompt import build_cas_prompt
+
+        self.assertIn("7", build_cas_prompt(7))
+
+    def test_token_cost_measured(self) -> None:
+        """Стоимость промта измерима — она должна быть видна в замере."""
+        from memory.cas_prompt import cas_token_cost
+
+        self.assertGreater(cas_token_cost(), 0)
+        self.assertEqual(cas_token_cost(0), 0)
 
 
 class TestLinking(unittest.TestCase):
     """
-    Связка ядра и глоссария: «чанк создан ядром -> обработан глоссарием».
+    Связка ядра и CAS: «чанк создан ядром -> обработан CAS».
 
-    Закрывает открытый вопрос методологии: раньше глоссарий вызывался только
+    Закрывает открытый вопрос методологии: раньше CAS вызывался только
     вручную, и автоматического шага не существовало.
     """
 
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.dir = Path(self.tmp.name)
-        self.glossary = Glossary(self.dir / "glossary.db", min_length=16)
+        self.cas = ContentAddressedStore(self.dir / "cas.db", min_length=16)
 
     def tearDown(self) -> None:
-        self.glossary.close()
+        self.cas.close()
         self.tmp.cleanup()
 
     def test_repeated_values_replaced(self) -> None:
         """Повторяющиеся точные данные заменяются ссылками, refs заполняются."""
-        from memory.linking import link_glossary
+        from memory.linking import link_cas
 
         path = "~/.dsh/profiles/web/cordis.patch.yml"
         chunk = make_chunk(1, f"путь {path} и снова {path}")
-        processed = link_glossary(chunk, self.glossary)
-        self.assertEqual(len(processed["glossary_refs"]), 1)
+        processed = link_cas(chunk, self.cas)
+        self.assertEqual(len(processed["cas_refs"]), 1)
         self.assertRegex(processed["content"], r"LB\?[0-9a-f]{8}\?")
         # Восстановление даёт исходный текст
-        self.assertIn(path, self.glossary.expand(processed["content"]))
+        self.assertIn(path, self.cas.expand(processed["content"]))
 
     def test_original_chunk_not_mutated(self) -> None:
         """Исходный чанк не меняется: возвращается новый объект."""
-        from memory.linking import link_glossary
+        from memory.linking import link_cas
 
         path = "/home/user/.some/long/path/file.yml"
         chunk = make_chunk(1, f"{path} {path}")
         before_content = chunk["content"]
-        processed = link_glossary(chunk, self.glossary)
+        processed = link_cas(chunk, self.cas)
         self.assertEqual(chunk["content"], before_content, "исходный чанк изменён")
         self.assertIsNot(chunk, processed)
 
     def test_metadata_untouched(self) -> None:
         """Метаданные не трогаются: n, level, created_at, source_range."""
-        from memory.linking import link_glossary
+        from memory.linking import link_cas
 
         path = "/home/user/another/long/path/file.yml"
         chunk = make_chunk(7, f"{path} {path}")
-        processed = link_glossary(chunk, self.glossary)
+        processed = link_cas(chunk, self.cas)
         for field in ("n", "level", "created_at", "source_range", "parent_chunk"):
             self.assertEqual(processed[field], chunk[field], f"поле {field} изменилось")
 
     def test_tokens_after_recomputed(self) -> None:
         """tokens_after пересчитывается: старое значение стало неверным."""
-        from memory.linking import link_glossary
+        from memory.linking import link_cas
         from memory import tokens
 
         path = "/home/user/recount/long/path/file.yml"
         chunk = make_chunk(1, f"{path} {path}")
         chunk["tokens_after"] = 999999  # заведомо неверное
-        processed = link_glossary(chunk, self.glossary)
+        processed = link_cas(chunk, self.cas)
         self.assertEqual(processed["tokens_after"], tokens.estimate(processed["content"]))
 
     def test_single_occurrence_not_replaced(self) -> None:
         """Одиночное значение не заменяется — refs пуст."""
-        from memory.linking import link_glossary
+        from memory.linking import link_cas
 
         chunk = make_chunk(1, "путь example/only/once/here.yml упомянут однажды")
-        processed = link_glossary(chunk, self.glossary)
-        self.assertEqual(processed["glossary_refs"], [])
+        processed = link_cas(chunk, self.cas)
+        self.assertEqual(processed["cas_refs"], [])
         self.assertEqual(processed["content"], chunk["content"])
 
     def test_no_llm_import_in_linking(self) -> None:
@@ -516,23 +633,23 @@ class TestLinking(unittest.TestCase):
 
     def test_report_mentions_delta(self) -> None:
         """Отчёт показывает изменение объёма — иначе выигрыш незаметен."""
-        from memory.linking import link_glossary, linking_report
+        from memory.linking import link_cas, linking_report
 
         path = "/home/user/report/long/path/file.yml"
         chunk = make_chunk(1, f"{path} {path}")
-        processed = link_glossary(chunk, self.glossary)
+        processed = link_cas(chunk, self.cas)
         report = linking_report(chunk, processed)
         self.assertIn("ссылок", report)
         self.assertIn("символов", report)
 
     def test_processed_chunk_matches_schema(self) -> None:
         """Обработанный чанк проходит валидацию по схеме."""
-        from memory.linking import link_glossary
+        from memory.linking import link_cas
         from memory.schema import validate_chunk
 
         path = "/home/user/schema/check/long/path/file.yml"
         chunk = make_chunk(1, f"{path} {path}")
-        processed = link_glossary(chunk, self.glossary)
+        processed = link_cas(chunk, self.cas)
         validate_chunk(processed)  # не должно бросить
 
 
@@ -547,7 +664,7 @@ class TestSchemaFile(unittest.TestCase):
         required = set(schema.get("required", []))
         for field in (
             "n", "source_range", "tokens_before", "tokens_after",
-            "created_at", "content", "glossary_refs", "level",
+            "created_at", "content", "cas_refs", "level",
         ):
             self.assertIn(field, required, f"в схеме нет обязательного поля {field}")
 
@@ -596,12 +713,12 @@ class TestSchemaFile(unittest.TestCase):
         with self.assertRaises(SchemaError):
             validate_chunk(broken)
 
-    def test_bad_hash_in_glossary_refs_rejected(self) -> None:
-        """Ссылка на глоссарий обязана быть 8 hex-символов."""
+    def test_bad_hash_in_cas_refs_rejected(self) -> None:
+        """Ссылка на CAS обязана быть 8 hex-символов."""
         from memory.schema import SchemaError, validate_chunk
 
         broken = make_chunk(1)
-        broken["glossary_refs"] = ["не-хеш"]
+        broken["cas_refs"] = ["не-хеш"]
         with self.assertRaises(SchemaError):
             validate_chunk(broken)
 
