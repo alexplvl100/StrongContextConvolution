@@ -27,6 +27,7 @@ __all__ = [
     "tokens",
     "cas",
     "cas_prompt",
+    "head",
     "linking",
     "schema",
     "stack",
