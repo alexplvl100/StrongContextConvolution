@@ -34,6 +34,7 @@ SUITES: tuple[tuple[str, str], ...] = (
     ("test_scc_usability.py", "оценка пригодности ядра"),
     ("test_memory.py", "трёхуровневая память и CAS"),
     ("test_methodology.py", "непротиворечивость методологии"),
+    ("test_state.py", "состояния методологии: запрет правки"),
 )
 
 

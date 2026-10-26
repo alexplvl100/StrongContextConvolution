@@ -56,6 +56,7 @@ DOCUMENTS = (
     "METHODOLOGY_MEMORY.md",
     "METHODOLOGY_CAS.md",
     "METHODOLOGY_HEAD.md",
+    "METHODOLOGY_STATE.md",
     "README.md",
     "docs/architecture.md",
     "docs/measurements.md",
@@ -186,6 +187,81 @@ class TestMethodologyConsistency(unittest.TestCase):
     def test_readme_lists_eight_invariants(self) -> None:
         """README указывает актуальное число инвариантов."""
         self.assertIn("инварианты 1-8", self.docs["README.md"])
+
+    # ── Состояния методологии ────────────────────────────────────────────────
+
+    def test_every_methodology_has_state_line(self) -> None:
+        """
+        У каждой МЕТОДОЛОГИИ есть строка `Состояние:` в шапке.
+
+        Проверяются только документы `METHODOLOGY*.md`: README и `docs/` —
+        описательные документы, состояния у них нет и быть не должно. Смешение
+        двух списков дало бы ложное срабатывание — живой урок 2026-10-26.
+        """
+        methodologies = {n: t for n, t in self.docs.items()
+                         if Path(n).name.startswith("METHODOLOGY")}
+        self.assertTrue(methodologies, "не найдено ни одной методологии")
+        offenders = [
+            name for name, text in methodologies.items()
+            if "**Состояние:**" not in "\n".join(text.split("\n")[:12])
+        ]
+        self.assertEqual(offenders, [], f"нет состояния в шапке: {offenders}")
+
+    def test_descriptive_documents_have_no_state(self) -> None:
+        """
+        У описательных документов состояния НЕТ.
+
+        README и `docs/` описывают систему, но не являются методологией:
+        состояние на них не распространяется, и его там быть не должно —
+        иначе список состояний размоется.
+        """
+        descriptive = {n for n in self.docs if not Path(n).name.startswith("METHODOLOGY")}
+        offenders = [
+            name for name in descriptive
+            if "**Состояние:**" in "\n".join(self.docs[name].split("\n")[:12])
+        ]
+        self.assertEqual(offenders, [], f"состояние у описательного документа: {offenders}")
+
+    def test_state_values_are_valid(self) -> None:
+        """Состояние — только В_РАБОТЕ или ПРИНЯТ."""
+        offenders: list[str] = []
+        for name, text in self.docs.items():
+            head = "\n".join(text.split("\n")[:12])
+            match = re.search(r"^\*\*Состояние:\*\*\s*(\S+)", head, re.M)
+            if match and match.group(1) not in ("В_РАБОТЕ", "ПРИНЯТ"):
+                offenders.append(f"{name}: {match.group(1)}")
+        self.assertEqual(offenders, [], f"недопустимое состояние: {offenders}")
+
+    def test_state_and_implementation_are_separate_fields(self) -> None:
+        """
+        «Состояние» и «Реализация» — разные поля, не одно.
+
+        Первое отвечает на вопрос «можно ли править», второе — «что сделано».
+        Методология может быть ПРИНЯТ и при этом не реализована.
+        """
+        for name in ("METHODOLOGY_CORE.md", "METHODOLOGY_HEAD.md"):
+            head = "\n".join(self.docs[name].split("\n")[:12])
+            self.assertIn("**Состояние:**", head, f"{name}: нет поля Состояние")
+            self.assertIn("**Реализация:**", head, f"{name}: нет поля Реализация")
+
+    def test_state_document_defines_both_states(self) -> None:
+        """Документ состояний описывает оба состояния и запрет реализации."""
+        state = self.docs["METHODOLOGY_STATE.md"]
+        self.assertIn("В_РАБОТЕ", state)
+        self.assertIn("ПРИНЯТ", state)
+        self.assertIn("только пользователь", state.lower())
+
+    def test_pointer_mentions_states(self) -> None:
+        """Указатель знает про состояния методологии."""
+        pointer = self.docs["METHODOLOGY.md"]
+        self.assertIn("METHODOLOGY_STATE.md", pointer)
+        self.assertIn("В_РАБОТЕ", pointer)
+
+    def test_readme_describes_state_gate(self) -> None:
+        """README описывает запрет реализации при В_РАБОТЕ."""
+        readme = self.docs["README.md"]
+        self.assertIn("В_РАБОТЕ", readme)
+        self.assertIn("check_state.py", readme)
 
 
 class TestCodeMatchesMethodology(unittest.TestCase):
