@@ -682,7 +682,7 @@ class TestCollision(unittest.TestCase):
 
 
 class TestCasPrompt(unittest.TestCase):
-    """Промт доступа к CAS: ставится после промта Архивариуса, перед чанками."""
+    """Инструкция CAS: третья часть HEAD — перед памятью, не сжимается."""
 
     def test_prompt_mentions_reference_format(self) -> None:
         """Промт объясняет формат ссылки — иначе она выглядит как мусор."""
