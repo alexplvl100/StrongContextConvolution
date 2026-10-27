@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import subprocess
 import sys
 import tempfile
@@ -77,6 +78,72 @@ class TestTextOf(unittest.TestCase):
         """Не-список не падает, а даёт пустую строку."""
         self.assertEqual(EV.text_of(None), "")
         self.assertEqual(EV.text_of("строка"), "")
+
+
+class TestExcludeSystem(unittest.TestCase):
+    """
+    РАЗДЕЛЕНИЕ КАНАЛОВ: системный контекст не попадает в юзерконтекст.
+
+    Системный контекст (роль) — отдельный канал; через ядро SCC проходит
+    только юзерконтекст (METHODOLOGY_HEAD.md §3). Разделение выполняется на
+    конвертере, а не изъятием из готового потока: ядро получает чистый поток
+    и о роли не знает.
+    """
+
+    def _raw(self) -> str:
+        """Журнал с ролью, диалогом и служебной разметкой."""
+        events = [
+            {"seq": 7, "type": "system/message",
+             "data": {"message": {"content": [{"type": "text", "text": "РОЛЬ АГЕНТА: правила работы"}]}}},
+            {"seq": 8, "type": "user/message",
+             "data": {"content": [{"type": "text", "text": "задача"}]}},
+            {"seq": 9, "type": "assistant/message",
+             "data": {"message": {"content": [{"type": "text", "text": "ответ"}]}}},
+        ]
+        return "\n".join(json.dumps(e, ensure_ascii=False) for e in events)
+
+    def test_system_excluded_by_flag(self) -> None:
+        """С флагом system/message в поток не попадает."""
+        stats = EV.Stats()
+        stream = EV.convert(self._raw(), None, None, stats, exclude_system=True)
+        self.assertNotIn("РОЛЬ АГЕНТА", stream, "системный контекст попал в юзерконтекст")
+        self.assertIn("задача", stream, "история потеряна")
+        self.assertEqual(stats.system_excluded, 1)
+
+    def test_system_included_without_flag(self) -> None:
+        """Без флага поведение прежнее: system/message остаётся в потоке."""
+        stats = EV.Stats()
+        stream = EV.convert(self._raw(), None, None, stats, exclude_system=False)
+        self.assertIn("РОЛЬ АГЕНТА", stream)
+        self.assertEqual(stats.system_excluded, 0)
+
+    def test_history_preserved_when_excluding(self) -> None:
+        """Исключение роли не теряет события работы."""
+        stats = EV.Stats()
+        stream = EV.convert(self._raw(), None, None, stats, exclude_system=True)
+        self.assertIn("задача", stream)
+        self.assertIn("ответ", stream)
+        self.assertEqual(len(EV.split_events(stream)), 2) if hasattr(EV, "split_events") else None
+
+    def test_numbering_has_no_gaps(self) -> None:
+        """
+        Нумерация E непрерывна после исключения.
+
+        Дыра в нумерации заставила бы скрипт чанкования решить, что события
+        потеряны: он сверяет диапазоны E.
+        """
+        stats = EV.Stats()
+        stream = EV.convert(self._raw(), None, None, stats, exclude_system=True)
+        numbers = [int(m) for m in re.findall(r"\[E(\d+)\]", stream)]
+        self.assertEqual(numbers, [1, 2], f"нумерация с дырой: {numbers}")
+
+    def test_cli_flag_documented(self) -> None:
+        """Флаг --exclude-system есть в справке."""
+        result = subprocess.run(
+            [sys.executable, str(EVENTS), "--help"],
+            capture_output=True, text=True,
+        )
+        self.assertIn("--exclude-system", result.stdout)
 
 
 class TestRenderEvent(unittest.TestCase):

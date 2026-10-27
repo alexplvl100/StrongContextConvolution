@@ -62,6 +62,7 @@ class Stats:
     raw_events: int = 0
     state_events: int = 0
     reasoning_blocks: int = 0
+    system_excluded: int = 0
     reasoning_chars: int = 0
     tool_calls: int = 0
     chars_in: int = 0
@@ -172,8 +173,21 @@ def convert(
     seq_from: int | None,
     seq_to: int | None,
     stats: Stats,
+    exclude_system: bool = False,
 ) -> str:
-    """Собрать поток событий из распакованного журнала."""
+    """
+    Собрать поток событий из распакованного журнала.
+
+    `exclude_system` исключает записи `system/message` из потока.
+
+    ЗАЧЕМ. Системный контекст (роль агента) — **отдельный канал**, он не часть
+    юзерконтекста и через ядро SCC проходить не должен (METHODOLOGY_HEAD.md §3).
+    Если его не исключить, роль попадёт в чанк, а при выносе первого чанка в
+    архив — потеряется из контекста.
+
+    Исключение на уровне КОНВЕРТЕРА предпочтительнее изъятия из готового
+    потока: ядро получает уже чистый юзерконтекст и о роли не знает вовсе.
+    """
     lines: list[str] = []
     number = 0
     for line in raw.splitlines():
@@ -193,6 +207,12 @@ def convert(
                 continue
             if seq_to is not None and seq > seq_to:
                 continue
+
+        # Системный контекст — отдельный канал. При exclude_system роль не
+        # попадает в поток вовсе, поэтому ядро SCC её не видит и сжать не может.
+        if exclude_system and event.get("type") == "system/message":
+            stats.system_excluded += 1
+            continue
 
         # Нумеруем только те события, что реально попадут в поток: иначе в
         # диапазоне окажутся дыры в нумерации E, и скрипт чанкования решит,
@@ -215,7 +235,8 @@ def cmd_convert(args: argparse.Namespace) -> int:
         return 2
 
     stats = Stats()
-    stream = convert(raw, args.seq_from, args.seq_to, stats)
+    stream = convert(raw, args.seq_from, args.seq_to, stats,
+                     exclude_system=getattr(args, "exclude_system", False))
     stats.chars_out = len(stream)
 
     if stats.state_events == 0:
@@ -233,6 +254,9 @@ def cmd_convert(args: argparse.Namespace) -> int:
         print(f"tool_call:   {stats.tool_calls}")
         print(f"символов:    вход {stats.chars_in}, поток {stats.chars_out}")
         print(f"состав:      {json.dumps(stats.kinds, ensure_ascii=False)}")
+        if stats.system_excluded:
+            print(f"исключено:   {stats.system_excluded} system/message "
+                  f"(системный контекст — отдельный канал, не юзерконтекст)")
     if args.out:
         print(f"записано:    {args.out} ({stats.chars_out} символов, ~{stats.chars_out // 4} токенов)")
     return 0
@@ -248,6 +272,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--seq-from", type=int, help="начальный seq журнала")
     parser.add_argument("--seq-to", type=int, help="конечный seq журнала")
     parser.add_argument("--stats", action="store_true", help="напечатать статистику")
+    parser.add_argument(
+        "--exclude-system",
+        action="store_true",
+        help="исключить system/message: системный контекст — отдельный канал, "
+             "через ядро SCC не проходит (METHODOLOGY_HEAD.md §3)",
+    )
     return parser
 
 
