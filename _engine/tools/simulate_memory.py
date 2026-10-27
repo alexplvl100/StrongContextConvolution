@@ -99,7 +99,9 @@ def derive_threshold(
     Живой урок: первая версия вычитания не делала, и контекст в симуляции
     показывал 100.7 % зоны вместо 99.9 %.
     """
-    limit = (zone - head) * ratio / (ratio + chunk_count)
+    # +1 слот: вынос по одному держит максимум на единицу больше равновесия.
+    # Стак колеблется N -> N+1 -> N, и в зону надо укладывать максимум N+1.
+    limit = (zone - head) * ratio / (ratio + chunk_count + 1)
     return int(limit - step_tokens)
 
 
@@ -157,6 +159,8 @@ def simulate(
             stack.append(chunk)
             short = 0.0
             if limit is not None:
+                # ЧАСТИЧНЫЙ вынос: старейший уходит, актуальные остаются.
+                # Вытесняем по одному за шаг — как делает evict_to_limit.
                 while len(stack) > limit:
                     stack.pop(0)
 
@@ -294,9 +298,11 @@ def main(argv: list[str] | None = None) -> int:
     print()
     threshold_c = derive_threshold(zone, args.head, args.chunks, args.ratio,
                                    args.step_tokens)
-    limit = (zone - args.head) * args.ratio / (args.ratio + args.chunks)
-    print(f"  формула режима C: T = (Z - HEAD) * r / (r + K) - step")
+    # +1 слот: вынос по одному даёт максимум на единицу больше равновесия.
+    limit = (zone - args.head) * args.ratio / (args.ratio + args.chunks + 1)
+    print(f"  формула режима C: T = (Z - HEAD) * r / (r + K + 1) - step")
     print(f"    предел S = {limit:.0f}, минус шаг {args.step_tokens} -> T = {threshold_c}")
+    print(f"    (+1 слот: вынос по одному держит максимум K+1 чанков)")
     return 0 if unstable < 3 else 1
 
 

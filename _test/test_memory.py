@@ -296,14 +296,70 @@ class TestLevels(unittest.TestCase):
             self.medium.append_chunk(make_chunk(1, level="long"))
 
     def test_archive_transition_by_threshold(self) -> None:
-        """Инвариант перехода: стак > порога -> вынос в архив."""
+        """
+        Инвариант перехода: стак > порога -> вынос СТАРЕЙШЕГО чанка.
+
+        Вынос частичный: уходит один старейший, актуальные остаются. Прежняя
+        версия выносила все чанки, и после выноса средняя память пустела.
+        """
         self.assertFalse(self.medium.needs_archive())
         self.stack.add(make_chunk(1, "x" * 2000))
         self.assertTrue(self.medium.needs_archive())
         moved = self.medium.move_to_long(self.long)
-        self.assertEqual(moved, 1)
-        self.assertEqual(len(self.medium), 0)
+        self.assertEqual(moved, 1, "вынесено не ровно одно событие")
         self.assertEqual(len(self.long), 1)
+        # при единственном чанке он уходит, и средняя пустеет — это норма
+        self.assertEqual(len(self.medium), 0)
+
+    def test_eviction_is_partial_oldest_first(self) -> None:
+        """
+        Вынос уносит САМЫЙ СТАРЫЙ чанк, актуальные остаются.
+
+        Это главное отличие от полного выноса: свежая история должна остаться
+        в контексте, а в архив идёт то, что уже не нужно.
+        """
+        for n in (1, 2, 3):
+            self.stack.add(make_chunk(n, "x" * 400))
+        self.assertEqual([e["n"] for e in self.stack.medium()], [1, 2, 3])
+        self.medium.move_to_long(self.long)
+        self.assertEqual([e["n"] for e in self.stack.long()], [1],
+                         "вынесен не самый старый чанк")
+        self.assertEqual([e["n"] for e in self.stack.medium()], [2, 3],
+                         "актуальные чанки потеряны")
+
+    def test_evict_to_limit_keeps_actual(self) -> None:
+        """
+        `evict_to_limit` выносит старые, пока стак не уложится в порог.
+
+        Последний чанк не выносится: средняя память не должна опустеть вовсе.
+        """
+        for n in (1, 2, 3, 4):
+            self.stack.add(make_chunk(n, "x" * 400))
+        moved = self.medium.evict_to_limit(self.long)
+        self.assertGreater(moved, 0, "вынос не сработал")
+        self.assertFalse(self.medium.needs_archive(), "стак не уложился в порог")
+        self.assertGreaterEqual(len(self.medium), 1, "средняя память опустела")
+        # вынесены самые старые
+        archived = [e["n"] for e in self.stack.long()]
+        remaining = [e["n"] for e in self.stack.medium()]
+        self.assertTrue(all(n < min(remaining) for n in archived) if remaining else True,
+                        f"вынесены не самые старые: архив {archived}, средняя {remaining}")
+
+    def test_after_accept_detects_divergence(self) -> None:
+        """
+        `after_accept` проверяет, что объявленные чанки реально в архиве.
+
+        Прежде здесь было мёртвое поле `_archived`, которое нигде не читалось и
+        при частичном выносе **затирало** историю. Теперь факт берётся из стека
+        (инвариант 6), и расхождение даёт ошибку.
+        """
+        from memory.long import LongMemory
+        from memory.stack import ChunkError
+
+        self.stack.add(make_chunk(1))
+        # чанк НЕ вынесен, но объявлен архивированным — расхождение
+        with self.assertRaises(ChunkError):
+            self.long.after_accept(self.stack, [1])
 
     def test_instruction_contains_last_number(self) -> None:
         """Инструкция несёт номер последнего чанка — без него запрос невозможен."""

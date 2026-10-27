@@ -25,7 +25,7 @@ from __future__ import annotations
 
 from memory import tokens
 from memory.config import MemoryConfig
-from memory.stack import ChunkStack
+from memory.stack import ChunkError, ChunkStack
 
 # ── Шаблон инструкции ────────────────────────────────────────────────────────
 # Инструкция — ЧАСТЬ HEAD (METHODOLOGY_HEAD.md §4.1): она стоит в начале
@@ -78,13 +78,26 @@ class LongMemory:
 
     def after_accept(self, stack: ChunkStack, numbers: list[int]) -> None:
         """
-        Завершить вынос: записать факт архивации.
+        Завершить вынос: зафиксировать факт архивации.
 
         Отдельный метод, а не побочный эффект `move_to_long`: вызывающий должен
         явно видеть, что переход завершён. Здесь же — место для будущей
         синхронизации с базой CAS (сейчас её нет).
+
+        ФАКТ АРХИВАЦИИ ЧИТАЕТСЯ ИЗ СТЕКА, а не хранится в поле. Прежде здесь
+        было `self._archived = ...` — поле, которое **нигде не читалось** и
+        при частичном выносе **затирало** историю: каждый вызов перезаписывал
+        список одним номером. Единственный источник правды об уровнях —
+        `chain.json` (инвариант 6), поэтому и факт архивации берётся оттуда.
         """
-        self._archived = sorted(set(numbers)) if numbers else []
+        # Номера, реально находящиеся в архиве: источник правды — стек.
+        archived = {entry["n"] for entry in stack.long()}
+        missing = [n for n in numbers if n not in archived]
+        if missing:
+            raise ChunkError(
+                f"чанки {missing} объявлены вынесенными, но в архиве их нет: "
+                "состояние расходится (инвариант 6)"
+            )
 
     def chunks(self) -> list[dict]:
         """Записи архивных чанков по возрастанию номера."""
