@@ -43,7 +43,13 @@ sys.path.insert(0, str(ROOT / "_engine"))
 sys.path.insert(0, str(ROOT))
 
 from memory import tokens  # noqa: E402
-from memory.config import DEFAULT_WINDOW, MemoryConfig, derive_thresholds  # noqa: E402
+from memory.config import (  # noqa: E402
+    DEFAULT_COMPRESS_RATIO,
+    DEFAULT_WINDOW,
+    DEFAULT_MEDIUM_CHUNKS as MEDIUM_CHUNKS,
+    MemoryConfig,
+    derive_thresholds,
+)
 from memory.cas import ContentAddressedStore, compute_hash, normalize  # noqa: E402
 from memory.long import LongMemory  # noqa: E402
 from memory.medium import MediumMemory  # noqa: E402
@@ -326,6 +332,60 @@ class TestLevels(unittest.TestCase):
                          "вынесен не самый старый чанк")
         self.assertEqual([e["n"] for e in self.stack.medium()], [2, 3],
                          "актуальные чанки потеряны")
+
+    def test_derived_threshold_holds_exactly_k(self) -> None:
+        """
+        Порог из `derive_thresholds` держит РОВНО K чанков, а не K−1.
+
+        ЖИВОЙ УРОК 2026-10-27. `needs_archive` использует СТРОГОЕ `>`, а размеры
+        чанков близки, но не равны. При пороге ровно `K·c` два чанка давали в
+        сумму ровно порог, условие `>` срабатывало, и в средней памяти оставался
+        **один** чанк вместо двух. Пик контекста был 62 % вместо 76 %.
+
+        Проверяется ФОРМУЛА, а не поведение стека с явными порогами: дефект был
+        именно в выводе порога, и тест с явными числами его не ловил.
+        """
+        for window in (262_144, 1_000_000):
+            with self.subTest(window=window):
+                config = MemoryConfig.for_window(window)
+                chunk = config.threshold_compress / DEFAULT_COMPRESS_RATIO
+                # K чанков НЕ должны превышать порог
+                self.assertLessEqual(
+                    MEDIUM_CHUNKS * chunk, config.threshold_archivist,
+                    f"окно {window}: {MEDIUM_CHUNKS} чанков ({MEDIUM_CHUNKS * chunk:.0f}) "
+                    f"уже превышают порог {config.threshold_archivist} — "
+                    "стак будет держать K−1",
+                )
+                # K+1 чанков ДОЛЖНЫ превышать — иначе стак вырастет
+                self.assertGreater(
+                    (MEDIUM_CHUNKS + 1) * chunk, config.threshold_archivist,
+                    f"окно {window}: {MEDIUM_CHUNKS + 1} чанков не превышают порог — "
+                    "вынос не сработает, и стак вырастет",
+                )
+
+    def test_stack_holds_k_in_practice(self) -> None:
+        """На практике стак держит K чанков, а не K−1."""
+        with tempfile.TemporaryDirectory() as tmp:
+            config = MemoryConfig.for_window(1_000_000)
+            chunk = config.threshold_compress / DEFAULT_COMPRESS_RATIO
+            stack = ChunkStack(Path(tmp) / "x", "x")
+            medium = MediumMemory(stack, config)
+            long_memory = LongMemory(stack, config)
+            for n in range(1, 12):
+                stack.add({
+                    "n": n, "parent_chunk": None,
+                    "source_range": {"start": 1, "end": 2},
+                    "tokens_before": 1, "tokens_after": int(chunk),
+                    "created_at": "2026-10-27T00:00:00+00:00",
+                    "content": "x" * int(chunk * 4),
+                    "cas_refs": [], "level": "medium",
+                })
+                if medium.needs_archive():
+                    medium.move_to_long(long_memory)
+            self.assertEqual(
+                len(medium), MEDIUM_CHUNKS,
+                f"стак держит {len(medium)} чанков вместо {MEDIUM_CHUNKS}",
+            )
 
     def test_evict_to_limit_keeps_actual(self) -> None:
         """
