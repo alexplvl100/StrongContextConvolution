@@ -166,24 +166,37 @@ def main(argv: list[str] | None = None) -> int:
     # Дефолты берём ИЗ КОНФИГА, а не дублируем числами. Живой урок: здесь
     # стояли старые значения (архив 60 000), порог из config.py не применялся,
     # и архив не срабатывал ни разу — два из трёх уровней не проверялись.
-    from memory.config import (  # импорт здесь: модуль уже в sys.path
-        DEFAULT_THRESHOLD_ARCHIVIST,
-        DEFAULT_THRESHOLD_COMPRESS,
-    )
+    #
+    # Второй урок 2026-10-28: здесь импортировались константы
+    # DEFAULT_THRESHOLD_COMPRESS / DEFAULT_THRESHOLD_ARCHIVIST, которых больше
+    # нет — пороги ВЫВОДЯТСЯ из окна модели (`derive_thresholds`). Инструмент
+    # падал с ImportError, и таблица в _docs/measurements.md устарела молча:
+    # её нечем было пересчитать.
+    from memory.config import DEFAULT_WINDOW, derive_thresholds
 
-    parser.add_argument("--compress-threshold", type=int, default=DEFAULT_THRESHOLD_COMPRESS)
-    parser.add_argument("--archivist-threshold", type=int, default=DEFAULT_THRESHOLD_ARCHIVIST)
+    parser.add_argument("--window", type=int, default=DEFAULT_WINDOW,
+                        help="окно модели; из него выводятся пороги")
+    parser.add_argument("--compress-threshold", type=int, default=None,
+                        help="переопределить порог сжатия (по умолчанию из окна)")
+    parser.add_argument("--archivist-threshold", type=int, default=None,
+                        help="переопределить порог архивации (по умолчанию из окна)")
     parser.add_argument("--json", action="store_true", help="машинный вывод")
     args = parser.parse_args(argv)
 
     if args.steps <= 0 or args.step_chars <= 0:
         print("НАРУШЕНИЕ: steps и step-chars обязаны быть положительными", file=sys.stderr)
         return 1
+    if args.window <= 0:
+        print("НАРУШЕНИЕ: окно модели обязано быть положительным", file=sys.stderr)
+        return 1
 
+    # Пороги выводятся из рабочей зоны (METHODOLOGY_MEMORY.md §4.1), если не
+    # переопределены явно.
+    derived_compress, derived_archivist = derive_thresholds(args.window)
     try:
         config = MemoryConfig(
-            threshold_compress=args.compress_threshold,
-            threshold_archivist=args.archivist_threshold,
+            threshold_compress=args.compress_threshold or derived_compress,
+            threshold_archivist=args.archivist_threshold or derived_archivist,
         )
     except ValueError as error:
         print(f"НАРУШЕНИЕ: {error}", file=sys.stderr)

@@ -38,6 +38,7 @@ SUITES: tuple[tuple[str, str], ...] = (
     ("test_head.py", "HEAD: два канала, установка, сборка контекста"),
     ("test_experiment_metrics.py", "метрика экспериментов о роли"),
     ("test_memory_stability.py", "устойчивость порогов памяти"),
+    ("test_role_experiments.py", "метрика экспериментов о роли"),
 )
 
 
