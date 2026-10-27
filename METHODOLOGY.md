@@ -82,11 +82,15 @@ CAS и HEAD. Ссылки на них по месту применения:
 
 | Документ | Версия | Дата | Статус реализации |
 |---|---|---|---|
-| [`METHODOLOGY_CORE.md`](METHODOLOGY_CORE.md) | 1.3 | 2026-10-27 | **реализовано** (перенесено из MultiAgentDSH) |
-| [`METHODOLOGY_MEMORY.md`](METHODOLOGY_MEMORY.md) | 2.2 | 2026-10-27 | **реализовано**; пороги из зоны, инварианты 1–8 |
+| [`METHODOLOGY_CORE.md`](METHODOLOGY_CORE.md) | 1.4 | 2026-10-28 | **реализовано** (перенесено из MultiAgentDSH) |
+| [`METHODOLOGY_MEMORY.md`](METHODOLOGY_MEMORY.md) | 2.3 | 2026-10-28 | **реализовано**; пороги из зоны, инварианты 1–8 |
 | [`METHODOLOGY_CAS.md`](METHODOLOGY_CAS.md) | 2.1 | 2026-10-27 | **реализовано**: CAS, связка, прямой доступ, инструкция |
-| [`METHODOLOGY_HEAD.md`](METHODOLOGY_HEAD.md) | 2.1 | 2026-10-27 | **реализовано**: `_engine/memory/head.py`, 27 тестов |
+| [`METHODOLOGY_HEAD.md`](METHODOLOGY_HEAD.md) | 2.2 | 2026-10-28 | **реализовано**: два канала, сборка HEAD, 22 теста |
 | [`METHODOLOGY_STATE.md`](METHODOLOGY_STATE.md) | 1.0 | 2026-10-26 | **реализовано**: `_engine/tools/check_state.py` |
+
+**Счётчики тестов здесь не дублируются намеренно.** Число тестов меняется при
+каждой правке, и записанное в документ оно устаревает молча. Актуальное число
+даёт `_test/run_all.py`.
 
 ## Статус проекта целиком
 

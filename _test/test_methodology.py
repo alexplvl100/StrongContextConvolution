@@ -138,14 +138,26 @@ class TestMethodologyConsistency(unittest.TestCase):
     def test_head_size_present_in_measurements(self) -> None:
         """Замеры знают про HEAD: без него экономия завышена."""
         self.assertIn("HEAD", self.docs["_docs/measurements.md"])
-        self.assertIn("1 976", self.docs["_docs/measurements.md"])
+        self.assertIn("2 008", self.docs["_docs/measurements.md"])
 
-    def test_head_described_as_removed(self) -> None:
-        """HEAD описывается как изымаемый перед свёрткой (инвариант 8)."""
+    def test_head_separated_not_extracted(self) -> None:
+        """
+        Разделение каналов описано как работа КОНВЕРТЕРА, а не изъятие.
+
+        Прежняя версия теста требовала слово «изымается» — оно описывало
+        удалённый `extract_head`. Тест закреплял устаревшую модель: разделение
+        выполняется на входе (`--exclude-system`), а не после сборки потока.
+        """
         memory = self.docs["METHODOLOGY_MEMORY.md"]
         head = self.docs["METHODOLOGY_HEAD.md"]
-        self.assertIn("изымается", memory, "MEMORY не знает про изъятие HEAD")
-        self.assertIn("изъятие", head, "HEAD не описывает изъятие")
+        combined = memory + head
+        self.assertIn("--exclude-system", combined, "не описан конвертер")
+        self.assertIn("--system-out", combined, "не описана выдача роли отдельно")
+        # изъятие из готового потока — только как ОПИСАНИЕ УДАЛЁННОГО
+        for name, text in (("MEMORY", memory), ("HEAD", head)):
+            if "extract_head" in text:
+                self.assertIn("удал", text.lower(),
+                              f"{name} упоминает extract_head как действующий")
 
     def test_head_is_first_in_context(self) -> None:
         """Порядок контекста: HEAD перед стаком."""
