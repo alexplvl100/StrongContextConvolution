@@ -2,7 +2,7 @@
 
 **Дата:** 2026-10-25
 **Модель:** `deepseek/deepseek-v4.1-flash` (RouterAI)
-**Инструмент:** [`core/scc_usability.py`](../core/scc_usability.py)
+**Инструмент:** [`_engine/core/scc_usability.py`](../_engine/core/scc_usability.py)
 **Вопрос заказчика:** годится ли свёрнутое ядро для продолжения работы — или
 полнота есть, а толку нет.
 
@@ -164,8 +164,8 @@ WR дал **11/14**: связи почти все (5/6), а **два факта 
 ## 9. Артефакты
 
 ```
-core/scc_usability.py         инструмент проверки пригодности
-tests/test_scc_usability.py   14 тестов оценщика
+_engine/core/scc_usability.py         инструмент проверки пригодности
+_test/test_scc_usability.py   14 тестов оценщика
 ```
 
 Эталонные факты извлекались из сырого журнала сессии `session-01d7fa7b`

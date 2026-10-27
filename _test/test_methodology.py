@@ -58,8 +58,8 @@ DOCUMENTS = (
     "METHODOLOGY_HEAD.md",
     "METHODOLOGY_STATE.md",
     "README.md",
-    "docs/architecture.md",
-    "docs/measurements.md",
+    "_docs/architecture.md",
+    "_docs/measurements.md",
 )
 
 
@@ -137,8 +137,8 @@ class TestMethodologyConsistency(unittest.TestCase):
 
     def test_head_size_present_in_measurements(self) -> None:
         """Замеры знают про HEAD: без него экономия завышена."""
-        self.assertIn("HEAD", self.docs["docs/measurements.md"])
-        self.assertIn("1 976", self.docs["docs/measurements.md"])
+        self.assertIn("HEAD", self.docs["_docs/measurements.md"])
+        self.assertIn("1 976", self.docs["_docs/measurements.md"])
 
     def test_head_described_as_removed(self) -> None:
         """HEAD описывается как изымаемый перед свёрткой (инвариант 8)."""
@@ -269,13 +269,13 @@ class TestCodeMatchesMethodology(unittest.TestCase):
 
     def test_cas_prompt_says_part_of_head(self) -> None:
         """Инструкция CAS в коде знает, что она часть HEAD."""
-        text = (ROOT / "memory" / "cas_prompt.py").read_text(encoding="utf-8")
+        text = (ROOT / "_engine" / "memory" / "cas_prompt.py").read_text(encoding="utf-8")
         self.assertIn("HEAD", text, "cas_prompt.py не упоминает HEAD")
 
     def test_no_stale_context_order_in_code(self) -> None:
         """В коде нет устаревшего порядка «после Архивариуса, перед чанками»."""
         offenders: list[str] = []
-        for path in sorted((ROOT / "memory").glob("*.py")):
+        for path in sorted((ROOT / "_engine" / "memory").glob("*.py")):
             text = path.read_text(encoding="utf-8")
             if "после промта обращения" in text or "перед чанками" in text:
                 offenders.append(path.name)
@@ -283,7 +283,7 @@ class TestCodeMatchesMethodology(unittest.TestCase):
 
     def test_long_memory_has_read_only_interface(self) -> None:
         """У Архивариуса только чтение: нет методов возврата чанка в стак."""
-        source = (ROOT / "memory" / "long.py").read_text(encoding="utf-8")
+        source = (ROOT / "_engine" / "memory" / "long.py").read_text(encoding="utf-8")
         for forbidden in ("move_to_medium", "restore_to_medium", "return_to_medium"):
             self.assertNotIn(forbidden, source, f"у Архивариуса появился путь возврата: {forbidden}")
 

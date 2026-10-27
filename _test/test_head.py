@@ -40,6 +40,9 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
+# _engine добавлен в путь: память лежит в _engine/memory, и импорты
+# `from memory import ...` работают без правки каждого файла.
+sys.path.insert(0, str(ROOT / "_engine"))
 sys.path.insert(0, str(ROOT))
 
 from memory.head import (  # noqa: E402
@@ -313,7 +316,7 @@ class TestHeadIsNotMemory(unittest.TestCase):
         Модуль не должен импортировать `linking`: замена ссылок в роли сделала бы
         её нечитаемой при потере базы.
         """
-        source = (ROOT / "memory" / "head.py").read_text(encoding="utf-8")
+        source = (ROOT / "_engine" / "memory" / "head.py").read_text(encoding="utf-8")
         self.assertNotIn("import linking", source)
         self.assertNotIn("link_cas", source)
 
@@ -341,7 +344,7 @@ class TestHeadIsNotMemory(unittest.TestCase):
 
 def main() -> int:
     """Запустить тесты с кодом возврата по соглашению SeverPact."""
-    if not (ROOT / "memory" / "head.py").exists():
+    if not (ROOT / "_engine" / "memory" / "head.py").exists():
         print("НЕ ИЗМЕРЕНО: нет модуля memory/head.py", file=sys.stderr)
         return 2
     verbosity = 2 if "-v" in sys.argv else 1

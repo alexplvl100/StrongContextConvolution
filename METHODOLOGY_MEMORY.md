@@ -3,7 +3,7 @@
 **Версия:** 2.0 · **Дата:** 2026-10-26
 **Состояние:** ПРИНЯТ
 **Реализация:** тестовая реализация
-**Код:** [`memory/`](memory/)
+**Код:** [`_engine/memory/`](_engine/memory/)
 
 Документ описывает, **где хранятся чанки** и **как они перемещаются** между
 уровнями. Как чанк создаётся — в [`METHODOLOGY_CORE.md`](METHODOLOGY_CORE.md).
@@ -127,7 +127,7 @@
 означал бы, что архив начинается ровно тогда же, когда и первое сжатие, — то
 есть архив был бы всегда пуст или всегда переполнен.
 
-Значения по умолчанию — в [`memory/config.py`](memory/config.py), раздел
+Значения по умолчанию — в [`_engine/memory/config.py`](_engine/memory/config.py), раздел
 «Замеры» ниже показывает их влияние на расход токенов.
 
 ## 5. Оборот памяти: без LLM
@@ -211,7 +211,7 @@
 ```
 runtime/dialogs/<dialog_id>/          <- НЕ в git (.gitignore)
 ├── chunks/
-│   ├── chunk_0001.json               <- чанк по core/schemas/chunk.schema.json
+│   ├── chunk_0001.json               <- чанк по _engine/core/schemas/chunk.schema.json
 │   ├── chunk_0002.json
 │   └── ...
 ├── chain.json                        <- порядок и уровни (инвариант 6)
@@ -224,7 +224,7 @@ runtime/dialogs/<dialog_id>/          <- НЕ в git (.gitignore)
 ## 9. Замеры токенов по уровням
 
 Сценарий: диалог из 40 сообщений, короткая память растёт и сжимается.
-Способ подсчёта — **эвристика «4 символа = 1 токен»** (`memory/tokens.py`),
+Способ подсчёта — **эвристика «4 символа = 1 токен»** (`_engine/memory/tokens.py`),
 точность ±33 % (замерено: эвристика занижает). Все числа — приближение,
 годное для сравнения уровней между собой, но не для прогноза стоимости.
 
@@ -250,7 +250,7 @@ runtime/dialogs/<dialog_id>/          <- НЕ в git (.gitignore)
 контекста. Выгода начинается, когда память экономит больше, чем стоит HEAD.
 
 Подробный прогон с фактическими числами — в
-[`docs/measurements.md`](docs/measurements.md).
+[`_docs/measurements.md`](_docs/measurements.md).
 
 ## 10. Связь с другими документами
 
@@ -259,4 +259,4 @@ runtime/dialogs/<dialog_id>/          <- НЕ в git (.gitignore)
 | [`METHODOLOGY_CORE.md`](METHODOLOGY_CORE.md) | создание чанка: свёртка сырого контекста |
 | **этот документ** | уровни памяти, переходы, инварианты 1–8 |
 | [`METHODOLOGY_CAS.md`](METHODOLOGY_CAS.md) | точные данные внутри чанка |
-| [`core/schemas/chunk.schema.json`](core/schemas/chunk.schema.json) | машинный формат чанка |
+| [`_engine/core/schemas/chunk.schema.json`](_engine/core/schemas/chunk.schema.json) | машинный формат чанка |

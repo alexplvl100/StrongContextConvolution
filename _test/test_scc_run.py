@@ -40,7 +40,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
-CORE = ROOT / "core"
+CORE = ROOT / "_engine" / "core"
 RUNNER = CORE / "scc_run.py"
 
 

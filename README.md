@@ -44,8 +44,8 @@ METHODOLOGY_CAS.md         CAS: хранилище точных данных
 METHODOLOGY_HEAD.md        HEAD: служебный раздел — роль и инструкции
 METHODOLOGY_STATE.md       состояния методологии: В_РАБОТЕ / ПРИНЯТ
 
-core/                      ЯДРО (перенесено как есть)
-  __init__.py              описание пакета, граница с memory/
+_engine/core/                ЯДРО
+  __init__.py              описание пакета, граница с памятью
   scc_events.py            журнал DSH -> поток событий (без LLM)
   scc_run.py               этапы I/II/III свёртки (LLM), автоповтор
   scc_chunk.py             изъятие ядра, сшивка чанков, гейт (без LLM)
@@ -53,7 +53,7 @@ core/                      ЯДРО (перенесено как есть)
   prompts/                 промты трёх этапов
   schemas/chunk.schema.json  контракт чанка
 
-memory/                    ПАМЯТЬ
+_engine/memory/              ПАМЯТЬ
   short.py                 короткая: несжатый контекст
   medium.py                средняя: стак чанков
   long.py                  долгая: архив + инструкция
@@ -66,7 +66,7 @@ memory/                    ПАМЯТЬ
   config.py                пороги и параметры
   tokens.py                подсчёт объёма (эвристика)
 
-tests/                     тесты (231 в восьми наборах)
+_test/                       тесты (231 в восьми наборах)
   test_scc*.py             тесты ядра (перенесены как есть)
   test_memory.py           инварианты памяти и CAS
   test_methodology.py      непротиворечивость методологии (18)
@@ -75,13 +75,15 @@ tests/                     тесты (231 в восьми наборах)
   fixtures/                образцы данных: SCC, чанк, текст для CAS
   run_all.py               все наборы одной командой
 
-tools/measure_memory.py    замер токенов по уровням
-docs/                      architecture.md, measurements.md
-rollout/                   внедрение: _template, deepseek-harness
-  deepseek-harness/ROLLOUT.md   метод: изоляция + движок компакции
-  deepseek-harness/plugin/      каркас плагина и скрипт изолированного запуска
+_engine/tools/               утилиты: check_state.py, measure_memory.py
+_docs/                       architecture.md, measurements.md
+_rollout/                    применение _engine к харнессу
+  _template/ROLLOUT.md     шаблон внедрения: 7 разделов
+  deepseek-harness/        метод для DSH: изоляция, движок компакции
+    plugin/                каркас плагина, патч, скрипт изолированного запуска
+_research/                   отчёты и исследования
+  R-SCC-01..05_*.md        замеры, дефекты, пригодность, CAS, HEAD
   (раздел исследований)
-research/                  замеры и журнал найденных дефектов
 runtime/                   рабочие данные диалогов — НЕ в git (.gitignore)
 ```
 
@@ -90,24 +92,24 @@ runtime/                   рабочие данные диалогов — НЕ
 ## Как запустить тесты
 
 ```bash
-python3 tests/run_all.py          # все наборы, сводка
-python3 tests/run_all.py -v       # подробно
-python3 tests/test_memory.py -v   # только память
+python3 _test/run_all.py          # все наборы, сводка
+python3 _test/run_all.py -v       # подробно
+python3 _test/test_memory.py -v   # только память
 ```
 
 Модель при этом **не вызывается**: тесты проверяют логику, а всё, что требует
-сети, вынесено в отдельные прогоны и описано в `research/`.
+сети, вынесено в отдельные прогоны и описано в `_research/`.
 
 ## Замер расхода токенов
 
 ```bash
-python3 tools/measure_memory.py --steps 140
+python3 _engine/tools/measure_memory.py --steps 140
 ```
 
 Результат на 140 шагах: **3 408 токенов в контексте против 84 000 без механизма
 памяти** — экономия ×24,6. Токены считаются эвристикой «4 символа = 1 токен»,
 которая **занижает примерно на треть** (замерено). Подробно:
-[`docs/measurements.md`](docs/measurements.md).
+[`_docs/measurements.md`](_docs/measurements.md).
 
 ---
 
@@ -150,8 +152,8 @@ python3 tools/measure_memory.py --steps 140
 строить на подвижном основании нельзя.
 
 ```bash
-python3 tools/check_state.py          # состояние всех методологий
-python3 tools/check_state.py --gate   # код 1, если реализация запрещена
+python3 _engine/tools/check_state.py          # состояние всех методологий
+python3 _engine/tools/check_state.py --gate   # код 1, если реализация запрещена
 ```
 
 **Почему запрет машинный.** Харнесс может терять контекст. После потери он не
@@ -198,7 +200,7 @@ python3 tools/check_state.py --gate   # код 1, если реализация 
 `CAS?{хеш}?` требует доступа к базе. При потере базы роль стала бы нечитаемой.
 
 Подробно: [`METHODOLOGY_HEAD.md`](METHODOLOGY_HEAD.md).
-Исследование влияния: [`research/R-SCC-05`](research/R-SCC-05_HEAD_влияние.md).
+Исследование влияния: [`_research/R-SCC-05`](_research/R-SCC-05_HEAD_влияние.md).
 
 ## Доступ к точным данным — напрямую, минуя Архивариуса
 
@@ -217,7 +219,7 @@ cas.resolve_many(["a1b2c3d4"])     # -> {"a1b2c3d4": "/home/user/.../file.yml"}
 путь стал бы «похожим», хеш — «приблизительно верным». Точные данные обязаны
 возвращаться дословно, поэтому путь к ним не проходит ни через одну модель.
 
-Инструкция CAS ([`memory/cas_prompt.py`](memory/cas_prompt.py)) — **часть
+Инструкция CAS ([`_engine/memory/cas_prompt.py`](_engine/memory/cas_prompt.py)) — **часть
 HEAD**: она объясняет формат ссылки, порядок обращения и запрещает догадываться
 о значении. Все три части HEAD стоят **перед** памятью:
 
@@ -253,7 +255,7 @@ HEAD**: она объясняет формат ссылки, порядок об
 | Маркер — единый источник | регулярка собирается из константы, проверено тестом |
 | Коллизии хеша | сдвиг на следующий свободный, лог в stderr |
 
-Все замеры, включая найденные дефекты, — в [`research/`](research/). За две
+Все замеры, включая найденные дефекты, — в [`_research/`](_research/). За две
 итерации найдено шесть дефектов ядра, все с исправлениями и тестами.
 
 ---
@@ -265,7 +267,7 @@ HEAD**: она объясняет формат ссылки, порядок об
 
 ```bash
 # результат в stdout, на диск НЕ пишется
-python3 core/scc_run.py stage3 WR.md WR_FILLED.md --to-stdout --no-ssc
+python3 _engine/core/scc_run.py stage3 WR.md WR_FILLED.md --to-stdout --no-ssc
 ```
 
 | Флаг | Что делает |
@@ -277,14 +279,14 @@ python3 core/scc_run.py stage3 WR.md WR_FILLED.md --to-stdout --no-ssc
 прогона в нём **не появилось ни одного файла**. Измерено: 57 402 символа входа →
 15 620 символов результата, ×3,7.
 
-Цепочка поставки проходит только через `core/`: `memory/` в ней не участвует,
+Цепочка поставки проходит только через `_engine/core/`: `_engine/memory/` в ней не участвует,
 `cas.db` и `runtime/` не создаются.
 
 ## Живая проверка CAS
 
 ```bash
 export ROUTERAI_API_KEY=...
-python3 tools/test_cas_agent.py          # 4 сценария поведения агента
+python3 _engine/tools/test_cas_agent.py          # 4 сценария поведения агента
 ```
 
 Агенту даются **инструменты доступа** (`resolve_many`, `restore`), которые
@@ -299,7 +301,7 @@ python3 tools/test_cas_agent.py          # 4 сценария поведения
 | Провокация догадки | **ВЕРНО** — отказался угадывать |
 
 Все четыре — с первой попытки. Отчёт:
-[`research/R-SCC-04`](research/R-SCC-04_подключение_CAS.md).
+[`_research/R-SCC-04`](_research/R-SCC-04_подключение_CAS.md).
 
 **Тестирование коллизий нашло три дефекта**, один из которых приводил бы к
 необратимой потере значений: прежний сдвиг адреса (`hash+1`) привязывал его к
@@ -311,12 +313,12 @@ python3 tools/test_cas_agent.py          # 4 сценария поведения
 | Что нужно | Куда |
 |---|---|
 | Понять устройство | [`METHODOLOGY.md`](METHODOLOGY.md) — указатель |
-| Понять архитектуру | [`docs/architecture.md`](docs/architecture.md) |
-| Увидеть замеры | [`docs/measurements.md`](docs/measurements.md) |
-| Проверить фактами | [`research/`](research/) |
-| Внедрить | [`rollout/`](rollout/) |
-| Разрабатывать метод для DSH | [`rollout/deepseek-harness/ROLLOUT.md`](rollout/deepseek-harness/ROLLOUT.md) |
-| Поставлять результаты | [раздел исследований](раздел исследований) |
+| Понять архитектуру | [`_docs/architecture.md`](_docs/architecture.md) |
+| Увидеть замеры | [`_docs/measurements.md`](_docs/measurements.md) |
+| Проверить фактами | [`_research/`](_research/) |
+| Внедрить | [`_rollout/`](_rollout/) |
+| Разрабатывать метод для DSH | [`_rollout/deepseek-harness/ROLLOUT.md`](_rollout/deepseek-harness/ROLLOUT.md) |
+| Поставлять результаты | [раздел разведки](раздел разведки) |
 | Понять HEAD | [`METHODOLOGY_HEAD.md`](METHODOLOGY_HEAD.md) |
 | Понять состояния | [`METHODOLOGY_STATE.md`](METHODOLOGY_STATE.md) |
-| Режим без хранения | `--to-stdout` и `--no-ssc` в `core/scc_run.py` |
+| Режим без хранения | `--to-stdout` и `--no-ssc` в `_engine/core/scc_run.py` |

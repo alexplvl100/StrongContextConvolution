@@ -33,7 +33,7 @@ import unittest
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-CORE = HERE.parent / "core"
+CORE = HERE.parent / "_engine" / "core"
 EVENTS = CORE / "scc_events.py"
 
 

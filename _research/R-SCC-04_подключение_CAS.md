@@ -1,7 +1,7 @@
 # R-SCC-04 — подключение CAS к ядру: живое тестирование
 
 **Дата:** 2026-10-26
-**Инструмент:** [`tools/test_cas_agent.py`](../tools/test_cas_agent.py)
+**Инструмент:** [`_engine/tools/test_cas_agent.py`](../_engine/tools/test_cas_agent.py)
 **Модель:** `deepseek/deepseek-v4.1-flash` (RouterAI)
 
 **Примечание о термине (2026-10-26).** В этом отчёте «промт CAS» — то, что
@@ -243,5 +243,5 @@ sqlite3.IntegrityError: UNIQUE constraint failed: cas.hash
 чанках, а другой (узкая регулярка) делал бы потерю **незаметной**. Ни один не
 проявился бы в обычной работе — оба требуют совпадения хешей.
 
-Инструмент: [`tools/test_cas_agent.py`](../tools/test_cas_agent.py) —
-воспроизводится командой `python3 tools/test_cas_agent.py`.
+Инструмент: [`_engine/tools/test_cas_agent.py`](../_engine/tools/test_cas_agent.py) —
+воспроизводится командой `python3 _engine/tools/test_cas_agent.py`.

@@ -28,7 +28,7 @@ import unittest
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-CORE = HERE.parent / "core"
+CORE = HERE.parent / "_engine" / "core"
 USABILITY = CORE / "scc_usability.py"
 
 

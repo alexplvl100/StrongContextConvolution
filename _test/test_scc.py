@@ -32,7 +32,7 @@ import unittest
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-CORE = HERE.parent / "core"
+CORE = HERE.parent / "_engine" / "core"
 CHUNK = CORE / "scc_chunk.py"
 
 # ── Образец SCC-файла: преамбула, ядро, свежее, диапазон ─────────────────────

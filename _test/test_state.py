@@ -42,7 +42,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
-CHECKER = ROOT / "tools" / "check_state.py"
+CHECKER = ROOT / "_engine" / "tools" / "check_state.py"
 
 # Документы, которые скрипт обязан проверять. Дублируется здесь намеренно:
 # если список в скрипте изменится, тест это заметит.
@@ -166,7 +166,7 @@ class TestGateBlocks(unittest.TestCase):
             ROOT, self.repo,
             ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"),
         )
-        self.checker = self.repo / "tools" / "check_state.py"
+        self.checker = self.repo / "_engine" / "tools" / "check_state.py"
 
     def tearDown(self) -> None:
         self.tmp.cleanup()

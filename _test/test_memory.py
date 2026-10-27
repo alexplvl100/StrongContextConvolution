@@ -36,7 +36,10 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
-MEMORY = ROOT / "memory"
+MEMORY = ROOT / "_engine" / "memory"
+# _engine добавлен в путь: память лежит в _engine/memory, и импорты
+# `from memory import ...` работают без правки каждого файла.
+sys.path.insert(0, str(ROOT / "_engine"))
 sys.path.insert(0, str(ROOT))
 
 from memory import tokens  # noqa: E402
@@ -844,8 +847,8 @@ class TestSchemaFile(unittest.TestCase):
     """Схема чанка существует и валидна как JSON."""
 
     def test_schema_is_valid_json(self) -> None:
-        """core/schemas/chunk.schema.json читается и содержит обязательные поля."""
-        schema_path = ROOT / "core" / "schemas" / "chunk.schema.json"
+        """_engine/core/schemas/chunk.schema.json читается и содержит обязательные поля."""
+        schema_path = ROOT / "_engine" / "core" / "schemas" / "chunk.schema.json"
         self.assertTrue(schema_path.exists(), "нет схемы чанка")
         schema = json.loads(schema_path.read_text(encoding="utf-8"))
         required = set(schema.get("required", []))
@@ -857,7 +860,7 @@ class TestSchemaFile(unittest.TestCase):
 
     def test_level_enum_excludes_short(self) -> None:
         """Уровень чанка — medium или long: у короткой памяти чанка нет."""
-        schema = json.loads((ROOT / "core" / "schemas" / "chunk.schema.json").read_text(encoding="utf-8"))
+        schema = json.loads((ROOT / "_engine" / "core" / "schemas" / "chunk.schema.json").read_text(encoding="utf-8"))
         self.assertEqual(schema["properties"]["level"]["enum"], ["medium", "long"])
 
     def test_schema_is_used_by_code(self) -> None:
