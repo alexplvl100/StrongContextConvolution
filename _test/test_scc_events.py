@@ -123,7 +123,32 @@ class TestExcludeSystem(unittest.TestCase):
         stream = EV.convert(self._raw(), None, None, stats, exclude_system=True)
         self.assertIn("задача", stream)
         self.assertIn("ответ", stream)
-        self.assertEqual(len(EV.split_events(stream)), 2) if hasattr(EV, "split_events") else None
+        # ровно два события E в потоке: user и assistant
+        self.assertEqual(len(re.findall(r"^\[E\d+\]", stream, re.M)), 2)
+
+    def test_system_context_collected_separately(self) -> None:
+        """
+        Системный контекст собирается в ОТДЕЛЬНЫЙ канал, а не теряется.
+
+        Он не должен попадать в юзерконтекст, но и пропасть не может: без него
+        HEAD останется без роли. Проверяется через параметр `system_out`.
+        """
+        stats = EV.Stats()
+        system: list[str] = []
+        stream = EV.convert(self._raw(), None, None, stats,
+                            exclude_system=True, system_out=system)
+        self.assertNotIn("РОЛЬ АГЕНТА", stream, "роль осталась в юзерконтексте")
+        self.assertEqual(len(system), 1, f"системный контекст не собран: {system}")
+        self.assertIn("РОЛЬ АГЕНТА", system[0])
+
+    def test_system_out_without_flag_is_ignored(self) -> None:
+        """Без --exclude-system системный контекст остаётся в потоке."""
+        stats = EV.Stats()
+        system: list[str] = []
+        stream = EV.convert(self._raw(), None, None, stats,
+                            exclude_system=False, system_out=system)
+        self.assertIn("РОЛЬ АГЕНТА", stream)
+        self.assertEqual(system, [], "системный контекст собран без флага")
 
     def test_numbering_has_no_gaps(self) -> None:
         """
@@ -136,6 +161,33 @@ class TestExcludeSystem(unittest.TestCase):
         stream = EV.convert(self._raw(), None, None, stats, exclude_system=True)
         numbers = [int(m) for m in re.findall(r"\[E(\d+)\]", stream)]
         self.assertEqual(numbers, [1, 2], f"нумерация с дырой: {numbers}")
+
+    def test_cli_system_out_without_exclude_is_violation(self) -> None:
+        """
+        `--system-out` без `--exclude-system` — нарушение, код 1.
+
+        Иначе системный контекст останется И в потоке, И в отдельном файле:
+        роль попадёт в ядро и будет сжата.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            journal = Path(tmp) / "j.jsonl"
+            journal.write_text(
+                "\n".join(json.dumps(e, ensure_ascii=False) for e in [
+                    {"seq": 1, "type": "system/message",
+                     "data": {"message": {"content": [{"type": "text", "text": "РОЛЬ"}]}}},
+                    {"seq": 2, "type": "user/message",
+                     "data": {"content": [{"type": "text", "text": "задача"}]}},
+                ]),
+                encoding="utf-8",
+            )
+            result = subprocess.run(
+                [sys.executable, str(EVENTS), str(journal),
+                 "--system-out", str(Path(tmp) / "sys.txt"),
+                 "--out", str(Path(tmp) / "out.txt")],
+                capture_output=True, text=True,
+            )
+            self.assertEqual(result.returncode, 1, result.stderr)
+            self.assertIn("--exclude-system", result.stderr)
 
     def test_cli_flag_documented(self) -> None:
         """Флаг --exclude-system есть в справке."""

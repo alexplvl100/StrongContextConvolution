@@ -43,7 +43,7 @@ sys.path.insert(0, str(ROOT / "_engine"))
 sys.path.insert(0, str(ROOT))
 
 from memory import tokens  # noqa: E402
-from memory.config import MemoryConfig  # noqa: E402
+from memory.config import DEFAULT_WINDOW, MemoryConfig, derive_thresholds  # noqa: E402
 from memory.cas import ContentAddressedStore, compute_hash, normalize  # noqa: E402
 from memory.long import LongMemory  # noqa: E402
 from memory.medium import MediumMemory  # noqa: E402
@@ -69,16 +69,45 @@ def make_chunk(n: int, content: str = "содержимое", level: str = "medi
 class TestConfig(unittest.TestCase):
     """Конфигурация и пороги."""
 
-    def test_two_thresholds_are_different(self) -> None:
-        """Пороги сжатия и архивации — разные числа (иначе архив бессмыслен)."""
-        config = MemoryConfig()
-        self.assertNotEqual(config.threshold_compress, config.threshold_archivist)
-        self.assertGreater(config.threshold_archivist, config.threshold_compress)
+    def test_thresholds_measure_different_things(self) -> None:
+        """
+        Пороги измеряют РАЗНОЕ и выводятся из рабочей зоны.
 
-    def test_archivist_must_exceed_compress(self) -> None:
-        """Архив раньше первого сжатия — ошибка конфига, а не «странность»."""
+        `threshold_compress` — размер короткой памяти, `threshold_archivist` —
+        размер стака чанков. Они **не обязаны** соотноситься отношением `>`:
+        живой урок 2026-10-27 — проверка `archivist > compress` при окне 1M
+        требовала поднять архив с 397 420 до 572 286 и ломала вывод порогов.
+        """
+        config = MemoryConfig.for_window(1_000_000)
+        # архив меньше порога сжатия — это НОРМА: чанк втрое меньше короткой
+        self.assertLess(config.threshold_archivist, config.threshold_compress)
+
+    def test_memory_fits_working_zone(self) -> None:
+        """
+        Содержательная проверка: вся память помещается в рабочую зону.
+
+        Заменяет прежнее сравнение порогов между собой, которое смысла не имело.
+        """
+        for window in (262_144, 1_000_000, 128_000):
+            with self.subTest(window=window):
+                config = MemoryConfig.for_window(window)
+                self.assertTrue(
+                    config.fits_zone(window),
+                    f"память не помещается в зону окна {window}: "
+                    f"HEAD + {config.threshold_archivist} + {config.threshold_compress}",
+                )
+
+    def test_thresholds_derived_from_window(self) -> None:
+        """Пороги растут вместе с окном модели."""
+        small = MemoryConfig.for_window(262_144)
+        large = MemoryConfig.for_window(1_000_000)
+        self.assertLess(small.threshold_compress, large.threshold_compress)
+        self.assertLess(small.threshold_archivist, large.threshold_archivist)
+
+    def test_negative_threshold_rejected(self) -> None:
+        """Отрицательный порог — ошибка конфига."""
         with self.assertRaises(ValueError):
-            MemoryConfig(threshold_compress=1000, threshold_archivist=500)
+            MemoryConfig(threshold_compress=-1)
 
     def test_positive_thresholds(self) -> None:
         """Нулевой или отрицательный порог отвергается."""
@@ -93,10 +122,20 @@ class TestConfig(unittest.TestCase):
         self.assertEqual(changed.threshold_compress, 200)
 
     def test_from_env(self) -> None:
-        """Конфиг читается из окружения."""
-        config = MemoryConfig.from_env({"SCC_THRESHOLD_COMPRESS": "500", "SCC_THRESHOLD_ARCHIVIST": "900"})
+        """Конфиг читается из окружения: явные пороги переопределяют вывод."""
+        config = MemoryConfig.from_env({
+            "SCC_THRESHOLD_COMPRESS": "500",
+            "SCC_THRESHOLD_ARCHIVIST": "900",
+        })
         self.assertEqual(config.threshold_compress, 500)
         self.assertEqual(config.threshold_archivist, 900)
+
+    def test_from_env_derives_by_default(self) -> None:
+        """Без переменных окружения пороги выводятся из окна."""
+        config = MemoryConfig.from_env({})
+        expected = MemoryConfig.for_window(DEFAULT_WINDOW)
+        self.assertEqual(config.threshold_compress, expected.threshold_compress)
+        self.assertEqual(config.threshold_archivist, expected.threshold_archivist)
 
     def test_from_env_rejects_garbage(self) -> None:
         """Нечисловое значение — понятная ошибка, а не тихий дефолт."""

@@ -77,7 +77,6 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent.parent
 sys.path.insert(0, str(ROOT / "_engine"))
 
-from memory.head import extract_head  # noqa: E402
 
 DEFAULT_MODEL = "deepseek/deepseek-v4.1-flash"
 DEFAULT_BASE_URL = "https://routerai.ru/api/v1"
@@ -306,27 +305,29 @@ def load_role() -> str:
     """
     Взять роль из реальной сессии DSH.
 
-    Роль извлекается тем же кодом, что и в реализации: `extract_head`. Так
-    эксперимент проверяет **тот же самый текст**, который пойдёт в HEAD.
+    Роль берётся **тем же путём, что и в реализации**: конвертер с
+    `--exclude-system --system-out`. Так эксперимент проверяет **тот самый
+    текст**, который пойдёт в HEAD.
     """
+    work = Path("/tmp/exp_head")
+    work.mkdir(parents=True, exist_ok=True)
     sessions = sorted(
         Path("~/.dsh/sessions/--root-Projects-MultiAgentDSH--").glob("*/session.v4.jsonl.zstd"),
         key=lambda p: -p.stat().st_size,
     )
     for session in sessions[:5]:
-        out = subprocess.run(
+        role_file = work / "role.txt"
+        if role_file.exists():
+            role_file.unlink()
+        subprocess.run(
             [sys.executable, str(ROOT / "_engine" / "core" / "scc_events.py"),
-             str(session), "--seq-to", "40", "--out", "/tmp/exp_head/stream.txt"],
+             str(session), "--seq-to", "40", "--exclude-system",
+             "--out", str(work / "stream.txt"), "--system-out", str(role_file)],
             capture_output=True, text=True,
         )
-        stream = Path("/tmp/exp_head/stream.txt")
-        if not stream.exists():
-            continue
-        head, _ = extract_head(stream.read_text(encoding="utf-8"))
-        if head.role:
-            return head.role
+        if role_file.exists() and role_file.read_text(encoding="utf-8").strip():
+            return role_file.read_text(encoding="utf-8")
     return ""
-
 
 def run_once(role: str, model: str, base_url: str, api_key: str) -> dict:
     """Один прогон: агент получает задачу и выбирает инструменты."""

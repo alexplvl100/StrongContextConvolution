@@ -22,24 +22,32 @@ SCC — HEAD: служебный раздел перед памятью
     2. Инструкция Архивариуса — как читать архив чанков
     3. Инструкция CAS         — как получать точные данные по CAS?{хеш}?
 
-ЗАЧЕМ ИЗЫМАТЬ HEAD
---------------------
-Ядро SCC получает **поток событий** и сжимает его целиком. Если HEAD останется
-в потоке, он попадёт внутрь чанка, и тогда роль окажется в архиве, CAS заменит
-в ней пути ссылками, а при повторной свёртке HEAD будет сжат вместе с памятью.
-**Изъятие — условие корректности, а не оптимизация.**
+ДВА КАНАЛА, А НЕ «ИЗЪЯТИЕ»
+----------------------------
+В харнессе разделены **системный контекст** (постоянный: роль, правила) и
+**юзерконтекст** (= короткая память). Через ядро SCC проходит **только
+юзерконтекст**; системный контекст идёт в HEAD напрямую.
 
-    from memory.head import extract_head, Head
+Разделение обеспечивает **конвертер журнала** — самое раннее место, где
+формируется поток:
 
-    head, rest = extract_head(event_stream)   # изъять роль из потока
-    context = head.render(last_chunk=3) + medium_text + short_text
+    scc_events.py <журнал> --exclude-system --out поток.txt --system-out роль.txt
 
-ЦЕПОЧКА РАБОТЫ
-----------------
-    поток событий
-        │ extract_head            <- отделяет роль
-        ├──> Head                 <- в контекст, ПЕРЕД стаком
-        └──> поток без HEAD       <- в ядро SCC
+**Модуль `head.py` разделение НЕ выполняет** и не содержит своего парсера
+потока: это была бы вторая реализация того же самого. Его задача — **собрать
+HEAD из уже готовой роли**:
+
+    from memory.head import Head, render_context
+
+    head = Head(role=Path("роль.txt").read_text())
+    context = render_context(head, medium_text, short_text)
+
+ПОЧЕМУ ТАК ПРАВИЛЬНЕЕ
+-----------------------
+Прежняя версия «изымала» роль из потока после сборки. Это сложнее и
+ошибочнее: ядро сжимает поток **целиком**, и если роль в него попала, никакая
+проверка после этого исход не отменит. Разделение на входе исключает попадание
+**по построению**.
 
 ПОЧЕМУ ЭТО ОТДЕЛЬНЫЙ МОДУЛЬ, А НЕ ЧАСТЬ MEMORY
 ------------------------------------------------
@@ -49,26 +57,9 @@ SCC — HEAD: служебный раздел перед памятью
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
 
 from memory.cas_prompt import build_cas_prompt
-
-# ── Разбор потока событий ────────────────────────────────────────────────────
-# Формат события (проверено на выходе core/scc_events.py):
-#
-#     [E<N>] ТИП (seq <M>):
-#     <тело события>
-#
-# Заголовок начинается с `[E<N>]`, затем ТИП, затем `(seq <M>)`. Тело — всё до
-# следующего заголовка.
-EVENT_HEAD_RE = re.compile(
-    r"^\[E(?P<number>\d+)\]\s+(?P<kind>[A-Z_]+)\s+\(seq\s+(?P<seq>[^)]+)\)\s*:\s*$",
-    re.MULTILINE,
-)
-
-# Тип события, который считается кандидатом в HEAD.
-ROLE_KIND = "SYSTEM"
 
 # ── Сообщение при отсутствии роли ────────────────────────────────────────────
 # Молча оставить HEAD без роли нельзя (METHODOLOGY_HEAD.md §3.5): агент будет
@@ -156,87 +147,6 @@ class Head:
             parts.append(cas)
 
         return "\n\n".join(part for part in parts if part)
-
-
-def split_events(stream: str) -> list[tuple[re.Match[str], str]]:
-    """
-    Разбить поток на события: (заголовок-совпадение, тело).
-
-    Возвращает список пар, чтобы вызывающий мог собрать поток обратно без
-    потери текста. Пустой список означает «событий не найдено» — это НЕ то же
-    самое, что «поток пуст», и вызывающий обязан различать.
-    """
-    matches = list(EVENT_HEAD_RE.finditer(stream))
-    events: list[tuple[re.Match[str], str]] = []
-    for index, match in enumerate(matches):
-        start = match.end()
-        end = matches[index + 1].start() if index + 1 < len(matches) else len(stream)
-        events.append((match, stream[start:end]))
-    return events
-
-
-def extract_head(
-    stream: str,
-    cas_instruction: str | None = None,
-) -> tuple[Head, str]:
-    """
-    Изъять HEAD из потока событий.
-
-    Возвращает (Head, поток_без_HEAD). Из потока удаляются **только** события
-    `SYSTEM`, стоящие **в начале** (до первого не-SYSTEM события) — см.
-    METHODOLOGY_HEAD.md §3.3.
-
-    ПОЧЕМУ ТОЛЬКО В НАЧАЛЕ. В DSH встречается повтор контекста роли в середине
-    сессии (наблюдалось `[E1] SYSTEM (seq 10)` после смены каталога). Такой
-    повтор — часть истории, и удалять его нельзя: он относится к конкретному
-    моменту, а не является ролью.
-
-    Если `SYSTEM` в начале нет — роль не найдена, и Head формируется с пустой
-    ролью: при рендере появится явное сообщение (§3.5).
-
-    Пустой поток даёт пустой Head и пустой поток — это не ошибка, но вызывающий
-    должен проверить, что события вообще были (`split_events`).
-    """
-    events = split_events(stream)
-    if not events:
-        # Событий не найдено. Не выдаём это за «роль отсутствует»: возможно,
-        # неверный формат входа, и молчаливое «роль не найдена» скрыло бы
-        # настоящую причину.
-        return Head(role="", role_source=None), stream
-
-    # Собираем ведущие SYSTEM-события: пока не встретили не-SYSTEM.
-    leading: list[tuple[re.Match[str], str]] = []
-    for match, body in events:
-        if match.group("kind") == ROLE_KIND:
-            leading.append((match, body))
-        else:
-            break
-
-    if not leading:
-        return Head(role="", role_source=None), stream
-
-    # Роль — тела ведущих SYSTEM-событий, в исходном порядке. Если их несколько,
-    # склеиваем: методология требует сохранить все (§3.3).
-    role_parts = [body.strip() for _, body in leading if body.strip()]
-    role = "\n\n".join(role_parts)
-    role_source = int(leading[0][0].group("number"))
-
-    # Удаляем изъятые события из потока: остаётся всё, начиная с первого
-    # не-SYSTEM события. Собираем заново из исходных срезов, а не вырезаем по
-    # позициям: позиции смещаются, и вырезание по индексам — источник ошибок.
-    first_kept = len(leading)
-    rest = "".join(
-        f"{match.group(0)}\n{body}"
-        for match, body in events[first_kept:]
-    )
-
-    head = Head(
-        role=role,
-        role_source=role_source,
-        cas_instruction=cas_instruction or "",
-        extracted=[f"E{match.group('number')}" for match, _ in leading],
-    )
-    return head, rest
 
 
 def attach_instructions(

@@ -29,7 +29,7 @@ SCC — конфигурация памяти
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 
 # ── Значения по умолчанию ────────────────────────────────────────────────────
 # Обоснование чисел: взяты из замеров research/R-SCC-02 (живая сессия,
@@ -49,8 +49,41 @@ from dataclasses import dataclass, replace
 # Прежние значения (архив 60 000, затем 24 000) требовали 68 и 7 чанков —
 # долгая память была практически недостижима, и два из трёх уровней памяти
 # не проверялись бы ни одним замером.
-DEFAULT_THRESHOLD_COMPRESS = 12_000
-DEFAULT_THRESHOLD_ARCHIVIST = 18_000
+# ── Рабочая зона и вывод порога ──────────────────────────────────────────────
+# Порог сжатия ВЫВОДИТСЯ из рабочей зоны, а не задаётся произвольным числом.
+# Обоснование — симуляция (_engine/tools/simulate_memory.py), проверено 21
+# тестом (_test/test_memory_stability.py).
+#
+# ЗАЧЕМ ВЫВОДИТЬ. При фиксированном пороге (доля окна) возможны два вырождения:
+#
+#   * сжатие по ОБЩЕМУ контексту, стак без ограничения — короткая память
+#     душится: чанки образуют геометрический ряд, сумма сходится ко всей зоне;
+#   * сжатие по общему контексту, стак ограничен — контекст переполняет зону
+#     на один шаг: условие не знает о дискретности прироста короткой памяти.
+#
+# Устойчиво только правило: **порог на короткую память**, выведенный из зоны
+# с учётом шага, и **ограниченное число чанков** в средней памяти.
+#
+# ФОРМУЛА:
+#
+#     S = (Z − HEAD) · r / (r + K)      предел короткой памяти
+#     T = S − step                       порог сжатия
+#
+# где Z — рабочая зона (доля окна), r — коэффициент сжатия ядра, K — чанков
+# в средней памяти, step — прирост короткой памяти за шаг диалога.
+#
+# Вычитание шага обязательно: без него контекст выходит за зону на
+# `step·(1 + K/r)` — при шаге 5 000 и K=2 это 7 778 токенов.
+DEFAULT_ZONE_RATIO = 0.9          # рабочая зона: доля окна модели
+DEFAULT_MEDIUM_CHUNKS = 2         # чанков в средней памяти (регулятор места)
+DEFAULT_COMPRESS_RATIO = 3.6      # замеренный коэффициент сжатия SCC
+DEFAULT_STEP_TOKENS = 5_000       # типовой прирост короткой памяти за шаг
+
+# Пороги по умолчанию — вычисляются под окно 262 144 токена (безопасное
+# значение, если окно модели неизвестно). При известном окне используйте
+# `derive_thresholds(window)`.
+DEFAULT_WINDOW = 262_144
+DEFAULT_HEAD_TOKENS = 2_000       # роль и инструкции в HEAD
 
 # Минимальная длина строки, которую имеет смысл заменять ссылкой.
 # Ссылка `CAS?{8 hex}?` занимает 13 символов; заменять более короткое значение
@@ -59,6 +92,77 @@ DEFAULT_GLOSSARY_MIN_LENGTH = 16
 
 # Сколько байтов читать из файла чанка за раз (защита от гигантских файлов).
 DEFAULT_MAX_CHUNK_BYTES = 64 * 1024 * 1024
+
+
+def derive_thresholds(
+    window: int,
+    head_tokens: int = DEFAULT_HEAD_TOKENS,
+    medium_chunks: int = DEFAULT_MEDIUM_CHUNKS,
+    ratio: float = DEFAULT_COMPRESS_RATIO,
+    step_tokens: int = DEFAULT_STEP_TOKENS,
+    zone_ratio: float = DEFAULT_ZONE_RATIO,
+) -> tuple[int, int]:
+    """
+    Вывести пороги из рабочей зоны. Возвращает (порог_сжатия, порог_архива).
+
+    Устойчивое правило (обоснование — симуляция `simulate_memory.py`):
+
+        Z = window · zone_ratio            рабочая зона
+        S = (Z − HEAD) · r / (r + K)       предел короткой памяти
+        T = S − step                       порог сжатия
+
+    Порог архивации — размер, при котором стак из `K` чанков уже набран:
+    `T_arch = K · (T/r) + запас`. Запас нужен, чтобы вынос срабатывал **после**
+    заполнения стака, а не на каждом шаге.
+
+    ПОЧЕМУ ИМЕННО ТАК. Проверено симуляцией на разбросе K и r: только это
+    правило даёт одновременно контейнер короткой памяти, близкие размеры
+    чанков и постоянное их количество в средней памяти. Альтернативы
+    вырождаются (см. `_test/test_memory_stability.py`).
+
+    Аргументы:
+        window — окно модели в токенах (для `deepseek-v4.1-flash` = 1 000 000).
+        head_tokens — размер HEAD: роль плюс инструкции.
+        medium_chunks — сколько чанков держим в средней памяти (регулятор:
+            больше чанков — меньше остаётся короткой памяти).
+        ratio — коэффициент сжатия ядра (замерено ×3,6 для SCC).
+        step_tokens — прирост короткой памяти за шаг диалога.
+        zone_ratio — доля окна, отводимая под всю память.
+    """
+    if window <= 0:
+        raise ValueError(f"окно модели должно быть положительным, получено {window}")
+    if medium_chunks < 1:
+        raise ValueError(f"чанков в средней памяти должно быть >= 1, получено {medium_chunks}")
+    if ratio <= 1:
+        raise ValueError(f"коэффициент сжатия должен быть > 1, получено {ratio}")
+    if not 0 < zone_ratio <= 1:
+        raise ValueError(f"рабочая зона — доля окна в пределах (0, 1], получено {zone_ratio}")
+
+    zone = int(window * zone_ratio)
+    if zone <= head_tokens:
+        raise ValueError(
+            f"рабочая зона {zone} не больше HEAD {head_tokens}: "
+            "места под память не остаётся"
+        )
+
+    limit = (zone - head_tokens) * ratio / (ratio + medium_chunks)
+    threshold_compress = max(1, int(limit - step_tokens))
+
+    # ПОРОГ АРХИВАЦИИ: (K − 1) чанков.
+    #
+    # `move_to_long` выносит **все** чанки средней памяти, а не часть. Значит
+    # стак колеблется между нулём и порогом, и максимальный стак равен порогу
+    # плюс один чанк. Чтобы вся память помещалась в зону:
+    #
+    #     HEAD + (T_arch + c) + T <= Z
+    #
+    # Отсюда `T_arch = (K − 1)·c`: на K-м чанке стак выносится целиком.
+    #
+    # Живой урок: сначала здесь стояло `K·c + c/2`, и условие помещения в зону
+    # не выполнялось — `fits_zone` возвращал False.
+    chunk_size = threshold_compress / ratio
+    threshold_archivist = max(1, int((medium_chunks - 1) * chunk_size))
+    return threshold_compress, threshold_archivist
 
 
 @dataclass(frozen=True)
@@ -72,8 +176,14 @@ class MemoryConfig:
     """
 
     # ── Пороги ───────────────────────────────────────────────────────────────
-    threshold_compress: int = DEFAULT_THRESHOLD_COMPRESS
-    threshold_archivist: int = DEFAULT_THRESHOLD_ARCHIVIST
+    # По умолчанию вычисляются под окно DEFAULT_WINDOW. При известном окне
+    # модели используйте `MemoryConfig.for_window(window)`.
+    threshold_compress: int = field(
+        default_factory=lambda: derive_thresholds(DEFAULT_WINDOW)[0]
+    )
+    threshold_archivist: int = field(
+        default_factory=lambda: derive_thresholds(DEFAULT_WINDOW)[1]
+    )
 
     # ── Глоссарий ────────────────────────────────────────────────────────────
     cas_min_length: int = DEFAULT_GLOSSARY_MIN_LENGTH
@@ -92,17 +202,57 @@ class MemoryConfig:
             raise ValueError(
                 f"threshold_archivist должен быть положительным, получено {self.threshold_archivist}"
             )
-        if self.threshold_archivist <= self.threshold_compress:
-            # Архив обязан начинаться ПОЗЖЕ первого сжатия, иначе он бессмыслен:
-            # первый же чанк сразу уедет в архив, и средняя память не будет
-            # использоваться вовсе.
+        # ПОРОГИ ИЗМЕРЯЮТ РАЗНОЕ — сравнивать их напрямую нельзя.
+        #
+        #   threshold_compress  — размер КОРОТКОЙ памяти (когда сжимать)
+        #   threshold_archivist — размер СТАКА ЧАНКОВ (когда выносить)
+        #
+        # Живой урок 2026-10-27: здесь стояла проверка `archivist > compress`.
+        # При окне 1M она давала «порог архива 397 420 должен быть больше
+        # порога сжатия 572 285» — и поднимала архив до 572 286, то есть
+        # ломала вывод порогов. Отношение между разными единицами смысла не имеет.
+        #
+        # Содержательное условие: **вся память помещается в рабочую зону**.
+        # Оно проверяется отдельным методом `fits_zone(window)`, потому что
+        # требует знания окна модели, которого в конфиге нет.
+        if self.threshold_archivist < 1:
             raise ValueError(
-                "threshold_archivist должен быть больше threshold_compress "
-                f"({self.threshold_archivist} <= {self.threshold_compress}): "
-                "иначе первый же чанк сразу уезжает в архив и средняя память не используется"
+                f"threshold_archivist должен быть положительным, "
+                f"получено {self.threshold_archivist}"
             )
         if self.cas_min_length < 0:
             raise ValueError("cas_min_length не может быть отрицательным")
+
+    def fits_zone(
+        self,
+        window: int,
+        head_tokens: int = DEFAULT_HEAD_TOKENS,
+        ratio: float = DEFAULT_COMPRESS_RATIO,
+        zone_ratio: float = DEFAULT_ZONE_RATIO,
+    ) -> bool:
+        """
+        Помещается ли память в рабочую зону окна.
+
+        Это **содержательная** проверка вместо сравнения порогов между собой:
+        они измеряют разное, и отношение между ними ничего не значит.
+
+        Условие: `HEAD + стак + короткая <= Z`. Размер стака берётся как
+        `threshold_archivist` (порог, при котором начинается вынос), размер
+        короткой — как `threshold_compress`.
+        """
+        zone = int(window * zone_ratio)
+        return head_tokens + self.threshold_archivist + self.threshold_compress <= zone
+
+    @classmethod
+    def for_window(cls, window: int, **kwargs: object) -> "MemoryConfig":
+        """
+        Собрать конфиг под конкретное окно модели.
+
+        Пороги выводятся из рабочей зоны, а не задаются вручную — так исключены
+        вырождения, найденные симуляцией (`_engine/tools/simulate_memory.py`).
+        """
+        compress, archivist = derive_thresholds(window, **kwargs)  # type: ignore[arg-type]
+        return cls(threshold_compress=compress, threshold_archivist=archivist)
 
     def with_thresholds(self, compress: int | None = None, archivist: int | None = None) -> "MemoryConfig":
         """Вернуть копию с другими порогами (исходный конфиг не меняется)."""
@@ -118,10 +268,11 @@ class MemoryConfig:
         Собрать конфиг из окружения. Отсутствующие переменные — значения по умолчанию.
 
         Переменные:
-            SCC_THRESHOLD_COMPRESS   — порог сжатия короткой памяти
-            SCC_THRESHOLD_ARCHIVIST  — порог выноса стака в архив
-            SCC_CAS_MIN_LENGTH  — минимальная длина заменяемого значения
-            SCC_CAS_ENABLED     — "0"/"false" отключает CAS
+            SCC_WINDOW               — окно модели, из него выводятся пороги
+            SCC_THRESHOLD_COMPRESS   — порог сжатия (переопределяет вывод)
+            SCC_THRESHOLD_ARCHIVIST  — порог архивации (переопределяет вывод)
+            SCC_CAS_MIN_LENGTH       — минимальная длина заменяемого значения
+            SCC_CAS_ENABLED          — "0"/"false" отключает CAS
         """
         source = os.environ if env is None else env
 
@@ -134,10 +285,15 @@ class MemoryConfig:
             except ValueError as error:
                 raise ValueError(f"{name}: ожидалось целое число, получено {raw!r}") from error
 
+        # Пороги по умолчанию ВЫВОДЯТСЯ из окна модели; переменные окружения
+        # могут переопределить их явно.
+        window = number("SCC_WINDOW", DEFAULT_WINDOW)
+        derived = derive_thresholds(window)
+
         enabled_raw = source.get("SCC_CAS_ENABLED", "1").strip().lower()
         return cls(
-            threshold_compress=number("SCC_THRESHOLD_COMPRESS", DEFAULT_THRESHOLD_COMPRESS),
-            threshold_archivist=number("SCC_THRESHOLD_ARCHIVIST", DEFAULT_THRESHOLD_ARCHIVIST),
+            threshold_compress=number("SCC_THRESHOLD_COMPRESS", derived[0]),
+            threshold_archivist=number("SCC_THRESHOLD_ARCHIVIST", derived[1]),
             cas_min_length=number("SCC_CAS_MIN_LENGTH", DEFAULT_GLOSSARY_MIN_LENGTH),
             cas_enabled=enabled_raw not in ("0", "false", "no", "off"),
         )

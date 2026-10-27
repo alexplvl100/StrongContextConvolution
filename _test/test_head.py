@@ -33,12 +33,15 @@ SCC — тесты HEAD: изъятие, установка, сборка кон
 
 from __future__ import annotations
 
+import importlib.util
+import json
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+EVENTS = HERE.parent / "_engine" / "core" / "scc_events.py"
 ROOT = HERE.parent
 # _engine добавлен в путь: память лежит в _engine/memory, и импорты
 # `from memory import ...` работают без правки каждого файла.
@@ -49,9 +52,7 @@ from memory.head import (  # noqa: E402
     NO_ROLE_NOTICE,
     Head,
     attach_instructions,
-    extract_head,
     render_context,
-    split_events,
 )
 from memory.long import LongMemory  # noqa: E402
 from memory.stack import ChunkStack  # noqa: E402
@@ -65,109 +66,81 @@ def stream(*events: tuple[str, str]) -> str:
     return "\n\n".join(parts) + "\n"
 
 
-class TestSplitEvents(unittest.TestCase):
-    """Разбор потока событий."""
+class TestChannels(unittest.TestCase):
+    """
+    РАЗДЕЛЕНИЕ КАНАЛОВ проверяется на конвертере, а не в head.py.
 
-    def test_parses_all_events(self) -> None:
-        """Все события находятся, тела сохраняются."""
-        text = stream(("SYSTEM", "роль"), ("USER", "задача"), ("ASSISTANT", "ответ"))
-        events = split_events(text)
-        self.assertEqual(len(events), 3)
-        self.assertEqual(events[0][1].strip(), "роль")
-        self.assertEqual(events[1][1].strip(), "задача")
+    Прежняя версия `head.py` сама «изымала» роль из потока — это дублировало
+    работу конвертера, и дублирование убрано. Теперь разделение выполняется
+    **на входе** (`--exclude-system`), а `head.py` только собирает HEAD.
+    """
 
-    def test_empty_stream_gives_no_events(self) -> None:
-        """Пустой поток не даёт событий: это отличается от «роль не найдена»."""
-        self.assertEqual(split_events(""), [])
-        self.assertEqual(split_events("текст без событий"), [])
+    def _convert(self, raw: str, exclude: bool = True) -> tuple[str, list[str]]:
+        """Прогнать конвертер журнала с отдельным сбором системного контекста."""
+        spec = importlib.util.spec_from_file_location("scc_ev_head", EVENTS)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules["scc_ev_head"] = module
+        assert spec.loader is not None
+        spec.loader.exec_module(module)
+        system: list[str] = []
+        stream = module.convert(raw, None, None, module.Stats(),
+                                exclude_system=exclude, system_out=system)
+        return stream, system
 
-    def test_kind_and_seq_parsed(self) -> None:
-        """Тип и номер журнала разбираются."""
-        events = split_events(stream(("SYSTEM", "x")))
-        self.assertEqual(events[0][0].group("kind"), "SYSTEM")
-        self.assertEqual(events[0][0].group("seq"), "1")
+    def _raw(self) -> str:
+        """Журнал: роль, диалог, вставка SYSTEM в середине."""
+        events = [
+            {"seq": 7, "type": "system/message",
+             "data": {"message": {"content": [{"type": "text", "text": "РОЛЬ АГЕНТА"}]}}},
+            {"seq": 8, "type": "user/message",
+             "data": {"content": [{"type": "text", "text": "задача"}]}},
+            {"seq": 9, "type": "system/message",
+             "data": {"message": {"content": [{"type": "text", "text": "ПОВТОР в середине"}]}}},
+            {"seq": 10, "type": "user/message",
+             "data": {"content": [{"type": "text", "text": "продолжение"}]}},
+        ]
+        return "\n".join(json.dumps(e, ensure_ascii=False) for e in events)
 
-
-class TestExtraction(unittest.TestCase):
-    """Изъятие HEAD из потока — главное свойство (инвариант 8)."""
-
-    def test_leading_role_extracted(self) -> None:
-        """Роль в начале извлекается, и в потоке её не остаётся."""
-        text = stream(("SYSTEM", "РОЛЬ агента"), ("USER", "задача"))
-        head, rest = extract_head(text)
-        self.assertEqual(head.extracted, ["E1"])
-        self.assertIn("РОЛЬ агента", head.role)
-        self.assertEqual(head.role_source, 1)
-        self.assertNotIn("РОЛЬ агента", rest, "роль осталась в потоке для ядра")
+    def test_role_goes_to_separate_channel(self) -> None:
+        """Роль уходит в отдельный канал и в поток не попадает."""
+        stream, system = self._convert(self._raw())
+        self.assertNotIn("РОЛЬ АГЕНТА", stream, "роль осталась в юзерконтексте")
+        self.assertTrue(any("РОЛЬ АГЕНТА" in part for part in system),
+                        f"роль не собрана отдельно: {system}")
 
     def test_history_preserved(self) -> None:
-        """История не теряется: остаются все не-SYSTEM события."""
-        text = stream(("SYSTEM", "роль"), ("USER", "задача"), ("ASSISTANT", "ответ"))
-        _, rest = extract_head(text)
-        self.assertIn("задача", rest)
-        self.assertIn("ответ", rest)
-        self.assertEqual(len(split_events(rest)), 2)
+        """История не теряется при разделении каналов."""
+        stream, _ = self._convert(self._raw())
+        self.assertIn("задача", stream)
+        self.assertIn("продолжение", stream)
 
-    def test_midstream_system_not_extracted(self) -> None:
+    def test_midstream_system_also_separated(self) -> None:
         """
-        SYSTEM в СЕРЕДИНЕ не извлекается — это вставка по ходу, часть истории.
+        SYSTEM в середине тоже уходит в отдельный канал.
 
-        Живой случай DSH: повтор контекста роли после смены каталога
-        (`[E1] SYSTEM (seq 10)`). Удалить его значило бы потерять событие.
+        Он НЕ является ролью, но и в юзерконтексте ему не место: это системный
+        текст. Конвертер разделяет по типу записи, а не по позиции.
         """
-        text = stream(
-            ("SYSTEM", "РОЛЬ"),
-            ("USER", "задача"),
-            ("SYSTEM", "ПОВТОР после смены каталога"),
-            ("USER", "продолжение"),
-        )
-        head, rest = extract_head(text)
-        self.assertEqual(head.extracted, ["E1"], "извлечён не только ведущий SYSTEM")
-        self.assertNotIn("ПОВТОР", head.role, "повтор попал в HEAD")
-        self.assertIn("ПОВТОР", rest, "повтор удалён из истории")
+        stream, system = self._convert(self._raw())
+        self.assertNotIn("ПОВТОР в середине", stream)
+        self.assertTrue(any("ПОВТОР" in part for part in system))
 
-    def test_multiple_leading_systems(self) -> None:
-        """Несколько SYSTEM в начале — все в HEAD, в исходном порядке."""
-        text = stream(
-            ("SYSTEM", "часть 1"),
-            ("SYSTEM", "часть 2"),
-            ("USER", "задача"),
-        )
-        head, rest = extract_head(text)
-        self.assertEqual(head.extracted, ["E1", "E2"])
-        self.assertIn("часть 1", head.role)
-        self.assertIn("часть 2", head.role)
-        self.assertLess(head.role.index("часть 1"), head.role.index("часть 2"))
-        self.assertEqual(len(split_events(rest)), 1)
+    def test_without_flag_system_stays(self) -> None:
+        """Без флага поведение прежнее: SYSTEM остаётся в потоке."""
+        stream, _ = self._convert(self._raw(), exclude=False)
+        self.assertIn("РОЛЬ АГЕНТА", stream)
 
-    def test_no_role_gives_empty_head(self) -> None:
-        """Поток без SYSTEM даёт пустую роль и поток без изменений."""
-        text = stream(("USER", "задача без роли"))
-        head, rest = extract_head(text)
-        self.assertEqual(head.extracted, [])
-        self.assertEqual(head.role, "")
-        self.assertIsNone(head.role_source)
-        self.assertEqual(rest, text, "поток изменён при отсутствии роли")
-
-    def test_empty_stream_not_reported_as_missing_role(self) -> None:
+    def test_head_has_no_own_parser(self) -> None:
         """
-        Пустой поток не выдаётся за «роль отсутствует».
+        head.py НЕ содержит своего парсера потока.
 
-        Иначе неверный формат входа скрылся бы за сообщением «роль не найдена»,
-        и настоящая причина осталась бы незамеченной.
+        Дублирование убрано: разделение — задача конвертера. Если в модуле
+        появится свой разбор событий, это снова будет вторая реализация.
         """
-        head, rest = extract_head("")
-        self.assertEqual(head.role, "")
-        self.assertEqual(head.extracted, [])
-        self.assertEqual(rest, "")
-
-    def test_role_not_duplicated_in_rest(self) -> None:
-        """Роль не остаётся в потоке ни в каком виде — иначе двойной расход."""
-        role_text = "You are an AI agent powered by DeepSeek Harness."
-        text = stream(("SYSTEM", role_text), ("USER", "задача"))
-        head, rest = extract_head(text)
-        self.assertEqual(rest.count(role_text), 0)
-        self.assertEqual(head.role.count(role_text), 1)
+        source = (ROOT / "_engine" / "memory" / "head.py").read_text(encoding="utf-8")
+        for forbidden in ("def extract_head", "def split_events", "EVENT_HEAD_RE"):
+            self.assertNotIn(forbidden, source,
+                             f"в head.py вернулся свой парсер: {forbidden}")
 
 
 class TestHeadRender(unittest.TestCase):
@@ -322,23 +295,24 @@ class TestHeadIsNotMemory(unittest.TestCase):
 
     def test_role_survives_cas_processing_untouched(self) -> None:
         """
-        Роль в HEAD не содержит ссылок CAS после обработки памяти.
+        Роль в HEAD не содержит ссылок CAS.
 
         Проверяется косвенно: head.py не вызывает CAS, значит роль остаётся
         дословной. Это и есть требование §7 методологии.
         """
-        role = "Use Path: ~/.dsh/profiles/web/cordis.patch.yml twice ~/.dsh/profiles/web/cordis.patch.yml"
-        text = stream(("SYSTEM", role), ("USER", "задача"))
-        head, _ = extract_head(text)
-        self.assertIn("cordis.patch.yml", head.role, "путь заменён ссылкой CAS")
-        self.assertNotIn("CAS?", head.role, "в роли появилась ссылка CAS")
+        role = ("Use Path: ~/.dsh/profiles/web/cordis.patch.yml "
+                "twice ~/.dsh/profiles/web/cordis.patch.yml")
+        head = Head(role=role)
+        rendered = head.render()
+        self.assertIn("cordis.patch.yml", rendered, "путь заменён ссылкой CAS")
+        self.assertNotIn("CAS?", rendered, "в роли появилась ссылка CAS")
 
     def test_head_not_written_to_stack(self) -> None:
         """HEAD не попадает в стек чанков: у памяти и HEAD разные области."""
         with tempfile.TemporaryDirectory() as tmp:
             stack = ChunkStack(Path(tmp) / "d", "d")
-            text = stream(("SYSTEM", "роль"), ("USER", "задача"))
-            extract_head(text)
+            head = Head(role="РОЛЬ")
+            head.render()
             self.assertEqual(stack.ordered(), [], "HEAD попал в стек чанков")
 
 

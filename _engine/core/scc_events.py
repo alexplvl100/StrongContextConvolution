@@ -174,6 +174,7 @@ def convert(
     seq_to: int | None,
     stats: Stats,
     exclude_system: bool = False,
+    system_out: list[str] | None = None,
 ) -> str:
     """
     Собрать поток событий из распакованного журнала.
@@ -189,6 +190,7 @@ def convert(
     потока: ядро получает уже чистый юзерконтекст и о роли не знает вовсе.
     """
     lines: list[str] = []
+    system_parts: list[str] = []
     number = 0
     for line in raw.splitlines():
         line = line.strip()
@@ -210,7 +212,15 @@ def convert(
 
         # Системный контекст — отдельный канал. При exclude_system роль не
         # попадает в поток вовсе, поэтому ядро SCC её не видит и сжать не может.
+        # СИСТЕМНЫЙ КОНТЕКСТ — ОТДЕЛЬНЫЙ КАНАЛ. Он не попадает в юзерконтекст,
+        # который уходит в ядро, но и НЕ ТЕРЯЕТСЯ: собирается в отдельный список,
+        # который вызывающий записывает в файл HEAD (METHODOLOGY_HEAD.md §3).
         if exclude_system and event.get("type") == "system/message":
+            data = event.get("data") or {}
+            message = data.get("message") or {}
+            body = text_of(message.get("content")) or text_of(data.get("content"))
+            if body.strip():
+                system_parts.append(body.strip())
             stats.system_excluded += 1
             continue
 
@@ -224,6 +234,8 @@ def convert(
         stats.state_events += 1
         lines.append(rendered)
 
+    if system_out is not None:
+        system_out.extend(system_parts)
     return "\n".join(lines) + ("\n" if lines else "")
 
 
@@ -234,9 +246,21 @@ def cmd_convert(args: argparse.Namespace) -> int:
     if raw is None:
         return 2
 
+    # Без --exclude-system системный контекст остаётся в потоке, и отдельный
+    # файл не нужен: роль уже там.
+    if getattr(args, "system_out", None) and not getattr(args, "exclude_system", False):
+        print(
+            "НАРУШЕНИЕ: --system-out без --exclude-system: системный контекст "
+            "останется в потоке и попадёт в ядро. Добавьте --exclude-system",
+            file=sys.stderr,
+        )
+        return 1
+
     stats = Stats()
+    system_parts: list[str] = []
     stream = convert(raw, args.seq_from, args.seq_to, stats,
-                     exclude_system=getattr(args, "exclude_system", False))
+                     exclude_system=getattr(args, "exclude_system", False),
+                     system_out=system_parts)
     stats.chars_out = len(stream)
 
     if stats.state_events == 0:
@@ -245,6 +269,10 @@ def cmd_convert(args: argparse.Namespace) -> int:
 
     if args.out:
         Path(args.out).write_text(stream, encoding="utf-8")
+
+    # Системный контекст — отдельным файлом, отдельным каналом.
+    if getattr(args, "system_out", None) and system_parts:
+        Path(args.system_out).write_text("\n\n".join(system_parts), encoding="utf-8")
 
     if args.stats or not args.out:
         print(f"журнал:      {path}")
@@ -259,6 +287,10 @@ def cmd_convert(args: argparse.Namespace) -> int:
                   f"(системный контекст — отдельный канал, не юзерконтекст)")
     if args.out:
         print(f"записано:    {args.out} ({stats.chars_out} символов, ~{stats.chars_out // 4} токенов)")
+    if getattr(args, "system_out", None) and system_parts:
+        total = sum(len(p) for p in system_parts)
+        print(f"системный:   {args.system_out} ({len(system_parts)} частей, "
+              f"{total} символов, ~{total // 4} токенов)")
     return 0
 
 
@@ -272,6 +304,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--seq-from", type=int, help="начальный seq журнала")
     parser.add_argument("--seq-to", type=int, help="конечный seq журнала")
     parser.add_argument("--stats", action="store_true", help="напечатать статистику")
+    parser.add_argument(
+        "--system-out",
+        help="куда записать системный контекст отдельным каналом (для HEAD)",
+    )
     parser.add_argument(
         "--exclude-system",
         action="store_true",
