@@ -1,0 +1,15 @@
+{
+  "experiment": "ABC: нужен ли SCC",
+  "july": "2026-10-31",
+  "journal": {"events": 3199, "chars": 205462, "tokens_est": 51365},
+  "facts_total": 1200,
+  "facts_by_kind": {"path": 300, "sum": 300, "hash": 300, "seq": 300},
+  "A_compaction": {"score": 8, "pct": 0.7,
+    "found": {"path": 2, "sum": 2, "hash": 2, "seq": 2}},
+  "B_scc": {"score": 201, "pct": 16.8,
+    "found": {"path": 201, "sum": 0, "hash": 0, "seq": 0}},
+  "C_search": {"score": 524, "pct": 43.7,
+    "found": {"path": 171, "sum": 203, "hash": 150, "seq": 0},
+    "search_queries": 75,
+    "found_by_search": {"path": 300, "sum": 300, "hash": 156, "seq": 218}}
+}
