@@ -244,3 +244,7 @@ python3 _engine/tools/check_state.py --gate
 замеры — [`_docs/measurements.md`](_docs/measurements.md) ·
 исследования и найденные дефекты — [`_research/`](_research/) ·
 внедрение — [`_rollout/`](_rollout/).
+
+## Лицензия
+
+[MIT](LICENSE) — используйте свободно, включая коммерческое применение.
